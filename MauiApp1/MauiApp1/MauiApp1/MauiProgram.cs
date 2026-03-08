@@ -77,8 +77,8 @@ namespace MauiApp1
                 //                         ? "https://10.0.2.2:7292/"  // Android emulator loop-back
                 //                         : "https://localhost:7292/");
                 c.BaseAddress = new Uri(DeviceInfo.Platform == DevicePlatform.Android
-                                         ? "http://10.126.159.226:7292/"  // Android emulator loop-back
-                                         : "http://10.126.159.226:7292/");
+                                         ? "http://192.168.1.142:7292/"  // PC IP on local network
+                                         : "http://192.168.1.142:7292/");
                 //c.BaseAddress = new Uri(DeviceInfo.Platform = = DevicePlatform.Android
                 //         ? "http://10.126.159.22:7292/"  // Android emulator loop-back
                 //         : "http://10.126.159.22:7292/");

@@ -23,7 +23,7 @@ namespace MauiApp1.Services
         {
             _factory = new ConnectionFactory
             {
-                HostName = "10.126.159.226",   // ← laptop IP / Rabbit host
+                HostName = "192.168.1.142",   // ← laptop IP / Rabbit host
                 Port = 5672,
                 UserName = "maui",                
                 Password = "maui",      
