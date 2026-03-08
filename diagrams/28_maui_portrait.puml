@@ -1,0 +1,97 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontSize 20
+skinparam classAttributeIconSize 0
+skinparam classFontSize 22
+skinparam packageFontSize 24
+skinparam classAttributeFontSize 20
+skinparam linetype polyline
+skinparam nodesep 20
+skinparam ranksep 25
+skinparam packagePadding 10
+
+left to right direction
+
+skinparam class {
+    BorderColor #333333
+    ArrowColor #555555
+    FontColor #222222
+}
+
+title <size:28>Structura MauiApp1 (.NET MAUI – Componenta Mobile)</size>
+
+package "Pages" #BBDEFB {
+    class LoginPage {
+        OnLoginClicked()
+    }
+    class RoutesPage {
+        StartGpsLogging()
+        LoadRoutesAsync()
+        OnStartClicked()
+        OnFinishClicked()
+        LogPointAsync()
+        StartObdAsync()
+    }
+}
+
+package "Services" #E8F5E9 {
+    class AuthService {
+        LoginAsync()
+        SetAuthHeader()
+    }
+    class AuthHandler {
+        SendAsync()
+    }
+    class RouteService {
+        StartMonitoring()
+        StopMonitoring()
+        UpdateRouteStatusAsync()
+        GetDriverRoutesAsync()
+    }
+    class RabbitMqService {
+        PublishAsync()
+        EnsureChannelAsync()
+        DisposeAsync()
+    }
+    class ObdService {
+        Connect()
+        SendObdCommand()
+        ReadFuelType()
+        ReadBatteryVoltage()
+        ParseObdResponse()
+        ReadVin()
+    }
+}
+
+package "Model" #FFFDE7 {
+    class LoginModel
+    class RouteDto
+    class GpsLogEntry
+    class CarDataDto
+    class RouteGpsLogEntry
+    class StatusUpdateDto
+}
+
+package "Converters" #F5F5F5 {
+    class StatusToStartVisibleConverter
+    class BoolToArrowConverter
+    class StatusToFinishVisibleConverter
+}
+
+' === Force vertical stacking ===
+Pages -[hidden]d-> Services
+Services -[hidden]d-> Model
+Model -[hidden]d-> Converters
+
+' === Connections ===
+LoginPage --> AuthService : <size:18>login</size>
+RoutesPage --> RouteService : <size:18>trasee</size>
+RoutesPage --> ObdService : <size:18>OBD2</size>
+ObdService --> RabbitMqService : <size:18>publică date</size>
+AuthHandler ..> AuthService : <size:18>interceptează JWT</size>
+RoutesPage ..> StatusToStartVisibleConverter
+RoutesPage ..> StatusToFinishVisibleConverter
+RoutesPage ..> BoolToArrowConverter
+
+@enduml

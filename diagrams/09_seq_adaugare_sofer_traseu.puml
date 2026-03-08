@@ -1,0 +1,38 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Adaugare Sofer si Traseu
+
+actor Administrator as admin
+participant "Web App" as web
+participant "Web API" as api
+participant "Identity Service" as id
+database "IdentityDB" as idb
+database "FleetDB" as fdb
+
+== Adaugare Sofer ==
+admin -> web : Click "Adauga Sofer"
+admin -> web : Completare date\n(Nume, Email, Telefon)
+web -> api : POST /api/drivers
+
+api -> id : CreateUser(email, password)
+id -> idb : INSERT AspNetUsers
+id -> idb : Asignare rol Driver
+api -> fdb : INSERT INTO Users
+api --> web : 201 Created
+web --> admin : "Sofer adaugat"
+
+== Adaugare Traseu ==
+admin -> web : Click "Adauga Traseu"
+web -> api : GET /api/drivers
+api --> web : Lista soferi
+web -> api : GET /api/cars
+api --> web : Lista masini
+
+admin -> web : Selecteaza sofer, masina, ruta
+web -> api : POST /api/trips\n{DriverId, CarId, Start, End, Date}
+api -> fdb : INSERT INTO Trips
+api --> web : 201 Created
+web --> admin : "Traseu creat"
+@enduml

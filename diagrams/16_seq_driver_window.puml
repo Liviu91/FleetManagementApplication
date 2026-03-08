@@ -1,0 +1,46 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Fereastra Sofer - Date OBD si GPS
+
+actor Sofer as driver
+participant "App Mobile" as app
+participant "Bluetooth" as bt
+participant "ELM327" as elm
+participant "GPS Service" as gps
+
+== Ecran Principal ==
+driver -> app : Deschide aplicatia (autentificat)
+app --> driver : Ecran principal\n(Trasee, Status, Avertizari)
+
+== Date OBD in Timp Real ==
+driver -> app : "Status Vehicul"
+app -> bt : Verificare conexiune
+bt --> app : Conectat
+
+loop Actualizare live (2-3s)
+    app -> elm : 01 0C (RPM)
+    elm --> app : RPM: 2500
+    app -> elm : 01 0D (Speed)
+    elm --> app : 65 km/h
+    app -> elm : 01 05 (Coolant Temp)
+    elm --> app : 90 C
+    app -> elm : 01 2F (Fuel Level)
+    elm --> app : 72%
+    app -> elm : 01 42 (Battery)
+    elm --> app : 14.2V
+
+    app -> gps : GetLocation()
+    gps --> app : Lat, Long
+
+    app --> driver : Gauge-uri: RPM, Viteza,\nTemp, Combustibil, Baterie\n+ Pozitie pe harta
+end
+
+== Erori Motor (DTC) ==
+driver -> app : "Avertizari Motor"
+app -> elm : 03 (Read DTCs)
+elm --> app : P0301, P0420
+app -> app : Traducere coduri\nP0301: Misfire Cilindru 1\nP0420: Eficienta catalizator scazuta
+app --> driver : Lista erori cu explicatii
+@enduml

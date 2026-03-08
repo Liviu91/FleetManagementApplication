@@ -1,0 +1,84 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontSize 14
+skinparam componentStyle rectangle
+
+title Diagrama de Componente - High Level
+
+package "Client Layer" #E8F5E9 {
+    component "Mobile App\n(.NET MAUI)" as mobile
+    component "Web Dashboard\n(Admin UI)" as web
+}
+
+package "Integration Layer" #E3F2FD {
+    component "Message Queue\n(RabbitMQ)" as mq
+    component "REST API\n(Backend)" as api
+    component "Real-Time Hub\n(SignalR)" as realtime
+}
+
+package "Processing Layer" #FFF3E0 {
+    component "Worker Service\n(Consumer)" as worker
+}
+
+package "Data Layer" #F3E5F5 {
+    database "FleetDB\n(SQL Server)" as fleetdb
+    database "IdentityDB\n(SQL Server)" as identitydb
+}
+
+package "External Systems" #ECEFF1 {
+    component "OBD-II Device\n(ELM327)" as obd
+    component "GPS Sensor" as gps
+}
+
+' External to Mobile
+obd -down-> mobile : Bluetooth\nVehicle Data
+gps -down-> mobile : GPS\nCoordinates
+
+' Mobile to Integration
+mobile -down-> mq : Publish\nTelemetry
+mobile -down-> api : Auth\nRequests
+
+' Message Queue to Worker
+mq -down-> worker : Consume\nMessages
+
+' Worker to Data
+worker -down-> fleetdb : Store\nTelemetry
+
+' API to Data
+api -down-> fleetdb : CRUD\nOperations
+api -down-> identitydb : User\nManagement
+
+' Web to Integration
+web -down-> api : HTTP\nRequests
+web -down-> realtime : WebSocket\nConnection
+
+' API to Real-Time
+api -right-> realtime : Push\nUpdates
+
+' Real-Time to Web
+realtime -up-> web : Live\nData
+
+note right of mobile
+  Colectează date OBD-II + GPS
+  Publică la RabbitMQ
+  Autentificare JWT
+end note
+
+note right of mq
+  Queue pentru telemetrie
+  Decuplare producător-consumator
+end note
+
+note right of worker
+  Procesare asincrona
+  Persistență în baza de date
+end note
+
+note left of web
+  Monitorizare real-time
+  Administrare flotă
+  Istoric trasee
+end note
+
+@enduml

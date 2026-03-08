@@ -1,0 +1,34 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Adaugare Masina
+
+actor Administrator as admin
+participant "Web App" as web
+participant "Web API" as api
+participant "Auth Middleware" as auth
+participant "CarsController" as ctrl
+database "FleetDB" as db
+
+admin -> web : Click "Adauga Masina"
+web -> web : Afisare formular
+
+admin -> web : Completare date si Submit
+web -> api : POST /api/cars\n{VIN, Make, Model, Year,\nFuelType, LicensePlate}
+
+api -> auth : Validare JWT Token
+auth -> auth : Verificare rol: Admin
+auth --> api : Autorizat
+
+api -> ctrl : CreateCar(carDto)
+ctrl -> db : SELECT WHERE VIN = @vin
+db --> ctrl : Nu exista
+
+ctrl -> db : INSERT INTO Cars
+db --> ctrl : Car creat
+ctrl --> api : 201 Created
+
+api --> web : 201 Created
+web --> admin : "Masina adaugata cu succes"
+@enduml

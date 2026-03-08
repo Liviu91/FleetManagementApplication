@@ -1,0 +1,29 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Secventa 4: Consum Mesaje (Worker)
+
+participant "RabbitMQ" as rmq
+participant "Worker Service" as worker
+participant "Data Processor" as proc
+participant "EF Core" as ef
+database "FleetDB" as db
+
+worker -> rmq : Abonare la fleet_data_queue
+
+loop Procesare continua
+    rmq -> worker : Deliver mesaj
+    worker -> proc : Deserializare JSON
+    proc -> proc : Validare date
+
+    proc -> ef : Salvare CarData
+    ef -> db : INSERT INTO CarData
+
+    proc -> ef : Actualizare Trip
+    ef -> db : UPDATE Trips (distanta, durata)
+
+    db --> ef : OK
+    worker -> rmq : ACK
+end
+@enduml

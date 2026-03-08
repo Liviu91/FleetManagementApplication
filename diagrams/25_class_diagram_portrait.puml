@@ -1,0 +1,146 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontSize 34
+skinparam classAttributeIconSize 0
+skinparam classFontSize 35
+skinparam packageFontSize 36
+skinparam classAttributeFontSize 34
+skinparam linetype polyline
+skinparam nodesep 20
+skinparam ranksep 25
+skinparam packagePadding 8
+
+left to right direction
+
+skinparam class {
+    BorderColor #333333
+    ArrowColor #555555
+    FontColor #222222
+}
+
+title Diagrama Generală de Clase
+
+' === TOP: MODELS ===
+package "Models" #E8F5E9 {
+    class AppUser {
+        Id, UserName, Email
+        PasswordHash
+    }
+    class Car {
+        Id, SerialNumber
+    }
+    class Route {
+        Id, UserId, CarId
+        Name, Status
+    }
+    class CarData {
+        Id, RouteId
+        RPM, Speed, VIN
+        Latitude, Longitude
+    }
+    enum Status {
+        Assigned = 0
+        Started = 1
+        Finished = 2
+    }
+
+    AppUser "1" -- "*" Route
+    Car "1" -- "*" Route
+    Route "1" -- "*" CarData
+    Route .. Status
+}
+
+' === DATA LAYER ===
+package "Data Layer" #FFF3E0 {
+    class WebAppDbContext {
+        DbSet<Car>
+        DbSet<Route>
+        DbSet<CarData>
+    }
+    interface "IRepository<T>" as IRepo {
+        GetAsync(), GetAll()
+        AddAsync(), UpdateAsync()
+        DeleteAsync()
+    }
+    class "Repository<T>" as Repo
+    Repo ..|> IRepo
+    Repo --> WebAppDbContext
+}
+
+' === WEB APP ===
+package "Web Application\n(ASP.NET Core MVC)" #F3E5F5 {
+    class HomeController {
+        Admin(), Driver()
+        AddUser(), AddCar()
+        AddRoute()
+        UpdateStatus()
+    }
+    class AuthController {
+        Login() → JWT
+    }
+    class DriverController {
+        GetRoutes()
+        UpdateStatus()
+    }
+}
+
+' === WORKER ===
+package "Worker Service" #FFCCBC {
+    class Worker {
+        StartAsync()
+        ExecuteAsync()
+    }
+    class "AsyncEventing\nBasicConsumer" as Consumer <<RabbitMQ>> {
+        ReceivedAsync()
+    }
+    Worker --> Consumer
+}
+
+' === MOBILE ===
+package "Mobile App\n(.NET MAUI)" #BBDEFB {
+    class LoginPage {
+        OnLoginClicked()
+    }
+    class RoutesPage {
+        LoadRoutesAsync()
+        OnStartClicked()
+        OnFinishClicked()
+        StartGpsLogging()
+    }
+    class AuthService {
+        LoginAsync()
+    }
+    class RouteService {
+        GetDriverRoutesAsync()
+        UpdateRouteStatusAsync()
+    }
+    class ObdService {
+        Connect()
+        StartMonitoring()
+        SendObdCommand()
+    }
+    class "RabbitMqService" as RMQ <<Publisher>> {
+        PublishAsync()
+    }
+
+    LoginPage --> AuthService
+    RoutesPage --> RouteService
+    RoutesPage --> ObdService
+    ObdService --> RMQ
+}
+
+' === VERTICAL CHAINING (top to bottom) ===
+Models -[hidden]> "Data Layer"
+"Data Layer" -[hidden]> "Web Application\n(ASP.NET Core MVC)"
+"Web Application\n(ASP.NET Core MVC)" -[hidden]> "Worker Service"
+"Worker Service" -[hidden]> "Mobile App\n(.NET MAUI)"
+
+' === CONNECTIONS ===
+HomeController --> IRepo
+Worker --> IRepo : writes to DB
+AuthService -[#2196F3,dashed]-> AuthController : <size:33>HTTP</size>
+RouteService -[#2196F3,dashed]-> DriverController : <size:33>HTTP</size>
+RMQ -[#FF5722,dashed,thickness=2]-> Consumer : <size:33>RabbitMQ\n"obd-data" / "gps-log"</size>
+
+@enduml

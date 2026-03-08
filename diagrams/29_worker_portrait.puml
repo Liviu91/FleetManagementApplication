@@ -1,0 +1,74 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontSize 20
+skinparam classAttributeIconSize 0
+skinparam classFontSize 22
+skinparam packageFontSize 24
+skinparam classAttributeFontSize 20
+skinparam linetype polyline
+skinparam nodesep 20
+skinparam ranksep 25
+skinparam packagePadding 10
+
+left to right direction
+
+skinparam class {
+    BorderColor #333333
+    ArrowColor #555555
+    FontColor #222222
+}
+
+title <size:28>Structura WorkerService (.NET – Componenta Worker)</size>
+
+package "Worker" #FFCCBC {
+    class Worker {
+        StartAsync()
+        __
+        retry 10 încercări / 5s
+        ExecuteAsync()
+    }
+    class "AsyncEventingBasicConsumer" as Consumer <<RabbitMQ>> {
+        ReceivedAsync()
+        __
+        coadă: "gps-log"
+        coadă: "obd-data"
+    }
+    Worker --> Consumer : <size:18>ascultă cozile</size>
+}
+
+package "Models" #E8F5E9 {
+    class Route
+    class RCar
+    class RUser
+    class RWebAppDbContext {
+        DbSet<Route>
+        DbSet<RCarData>
+        DbSet<RRouteGpsLogEntry>
+    }
+    class RRouteGpsLogEntry
+    class RCarData
+    class RObdDataEntry
+}
+
+package "Repository" #E3F2FD {
+    interface "IRepository<T>" as IRepo {
+        GetAsync()
+        GetAll()
+        AddAsync()
+        UpdateAsync()
+        DeleteAsync()
+    }
+    class "Repository<T>" as Repo
+    Repo ..|> IRepo
+    Repo --> RWebAppDbContext
+}
+
+' === Force vertical stacking ===
+Worker -[hidden]d-> Models
+Models -[hidden]d-> Repository
+
+' === Connections ===
+Worker --> IRepo : <size:18>injectează în DB</size>
+
+@enduml

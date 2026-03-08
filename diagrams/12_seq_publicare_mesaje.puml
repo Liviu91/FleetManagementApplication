@@ -1,0 +1,44 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Publicare Mesaje catre RabbitMQ
+
+participant "App Mobile" as app
+participant "ELM327" as elm
+participant "GPS Service" as gps
+participant "Coada Locala" as localq
+participant "Connectivity" as net
+participant "RabbitMQ Client" as client
+participant "RabbitMQ Server" as rmq
+
+loop Colectare (la fiecare 5s)
+    app -> elm : Cerere OBD-II
+    elm --> app : Speed, RPM, Temp, Voltage
+
+    app -> gps : Cerere pozitie
+    gps --> app : Lat, Long
+
+    app -> app : Creare CarData JSON
+    app -> localq : Enqueue(CarData)
+end
+
+app -> net : Verificare conectivitate
+
+alt Online
+    net --> app : Internet disponibil
+    app -> localq : DequeueAll()
+    localq --> app : Mesaje pending
+
+    loop Pentru fiecare mesaj
+        app -> client : Serializare JSON
+        client -> rmq : BasicPublish\n(exchange, routingKey, body)
+        rmq --> client : ACK
+    end
+
+    app -> localq : ClearSent()
+else Offline
+    net --> app : Fara Internet
+    note right of app : Retry la reconectare
+end
+@enduml

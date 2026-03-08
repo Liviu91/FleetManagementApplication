@@ -1,0 +1,39 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Afisare Trasee
+
+actor "Utilizator\n(Admin/Sofer)" as user
+participant "Aplicatie\n(Web/Mobile)" as app
+participant "Web API" as api
+participant "Auth Middleware" as auth
+database "FleetDB" as db
+
+user -> app : Navigheaza la "Trasee"
+app -> api : GET /api/trips\nBearer {token}
+
+api -> auth : Validare JWT
+auth -> auth : Extragere UserId, Role
+
+alt Rol: Admin
+    api -> db : SELECT Trips\nJOIN Users JOIN Cars\nORDER BY StartTime DESC
+    db --> api : Toate traseele
+else Rol: Driver
+    api -> db : SELECT Trips\nWHERE DriverId = @userId\nJOIN Cars
+    db --> api : Traseele soferului
+end
+
+api --> app : JSON [{TripId, Driver, Car,\nStart, End, Distance,\nAvgSpeed, MaxSpeed, Status}]
+app --> user : Afisare tabel trasee
+
+== Detalii Traseu ==
+user -> app : Selecteaza traseu
+app -> api : GET /api/trips/{id}/details
+api -> db : SELECT CarData\nWHERE TripId = @id\nORDER BY Timestamp
+db --> api : Puncte GPS + date OBD
+api --> app : {Route: [{Lat, Long,\nSpeed, RPM, Timestamp}]}
+
+app -> app : Desenare traseu pe harta
+app --> user : Harta + grafice\n(viteza, RPM, statistici)
+@enduml

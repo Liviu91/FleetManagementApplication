@@ -1,0 +1,28 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Secventa 3: Publicare Mesaje
+
+participant "App Mobile" as app
+participant "Coada Locala" as localq
+participant "Network Monitor" as net
+participant "RabbitMQ Publisher" as pub
+participant "RabbitMQ Server" as rmq
+
+app -> localq : Adauga date (OBD + GPS)
+
+alt Conexiune Internet disponibila
+    net -> app : Internet activ
+    app -> localq : Preia mesaje
+    localq --> app : Batch mesaje
+    app -> pub : Trimite batch
+    pub -> rmq : Publish (fleet_data_exchange)
+    rmq --> pub : ACK
+    pub --> app : Publicare reusita
+    app -> localq : Sterge mesajele trimise
+else Fara Internet
+    net -> app : Offline
+    app -> localq : Mesajele raman in coada
+end
+@enduml

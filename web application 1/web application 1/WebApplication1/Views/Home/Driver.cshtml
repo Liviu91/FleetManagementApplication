@@ -1,0 +1,180 @@
+﻿@using System.Text.Json
+@model IEnumerable<WebApplication1.DTOs.RouteDisplayDTO>
+
+@{
+    ViewData["Title"] = "Driver Dashboard";
+
+    // all telemetry coming from ViewBag
+    var carData   = ViewBag.CarData as List<WebApplication1.DTOs.DisplayDTO> ?? new();
+
+    // group ALL points per RouteId (no Take(5) here!)
+    var grouped   = carData
+                    .GroupBy(c => c.RouteId)
+                    .ToDictionary(g => g.Key, g => g
+                        .OrderByDescending(p => p.Timestamp)   // newest first
+                        .ToList());
+
+    var pointsJson = System.Text.Json.JsonSerializer.Serialize(
+                        grouped,
+                        new JsonSerializerOptions () { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase });
+}
+
+<h2>My Assigned Routes</h2>
+
+@if (!Model.Any())
+{
+    <p>No routes assigned to you yet.</p>
+}
+else
+{
+<table class="table table-bordered align-middle">
+    <thead>
+        <tr>
+            <th style="width:35px"></th>
+            <th>Route</th><th>Car</th><th>Start</th><th>End</th>
+            <th>Start Date</th><th>End Date</th><th>Status</th><th style="width:110px">Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+    @foreach (var r in Model)
+    {
+        <tr>
+            <!-- toggle -->
+            <td>
+                <button class="btn btn-sm toggle"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#pane-@r.Id"
+                        aria-expanded="false">►</button>
+            </td>
+
+            <td>@r.Name</td>
+            <td>@r.CarSerialNumber</td>
+            <td>@r.Start</td>
+            <td>@r.End</td>
+            <td>@r.StartDate:yyyy-MM-dd HH:mm</td>
+            <td>@(r.EndDate?.ToString("yyyy-MM-dd HH:mm") ?? "—")</td>
+
+            <td>
+                <span class="badge @(r.Status switch
+                    { WebApplication1.Enums.Status.Assigned => "bg-secondary",
+                      WebApplication1.Enums.Status.Started  => "bg-warning text-dark",
+                      _                                      => "bg-success" })">
+                    @r.Status
+                </span>
+            </td>
+
+            <td>
+                @if (r.Status == WebApplication1.Enums.Status.Assigned)
+                {
+                    <button class="btn btn-warning btn-sm"
+                            onclick="updateStatus(@r.Id,'Started')">Start</button>
+                }
+                else if (r.Status == WebApplication1.Enums.Status.Started)
+                {
+                    <button class="btn btn-success btn-sm"
+                            onclick="updateStatus(@r.Id,'Finished')">Finish</button>
+                }
+                else
+                {
+                    <i class="text-muted">—</i>
+                }
+            </td>
+        </tr>
+
+        <!-- collapsible details -->
+        <tr class="collapse bg-light" id="pane-@r.Id">
+            <td colspan="9">
+                <div class="p-2">
+
+                    <!-- scrollable table (≈5 rows ~150 px) -->
+                    <div style="max-height:150px;overflow:auto">
+                        <table class="table table-sm table-striped mb-2">
+                            <thead>
+                                <tr>
+                                    <th>Timestamp</th><th>Lat</th><th>Lon</th>
+                                    <th>RPM</th><th>Coolant °C</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tbl-@r.Id"><!-- rows injected by JS --></tbody>
+                        </table>
+                    </div>
+
+                    <!-- Leaflet map -->
+                    <div id="map-@r.Id" style="height:250px"></div>
+                </div>
+            </td>
+        </tr>
+    }
+    </tbody>
+</table>
+}
+
+@section Scripts
+{
+    <!-- Leaflet -->
+    <link  rel="stylesheet" href="~/lib/leaflet/leaflet.css" />
+    <script src="~/lib/leaflet/leaflet.js"></script>
+
+    <script>
+        /* full data from server */
+        const grouped = @Html.Raw(pointsJson);
+
+        function updateStatus(id, status) {
+            fetch('/updateRouteStatus', {
+                method: 'POST',
+                headers: { 'Content-Type':'application/json' },
+                body: JSON.stringify({ routeId:id, newStatus:status })
+            }).then(r => r.ok ? location.reload()
+                              : Swal.fire('Error','Request failed','error'));
+        }
+
+        /* accordion toggles */
+        document.querySelectorAll('button.toggle').forEach(btn => {
+            btn.addEventListener('click', () => {
+                btn.textContent = btn.getAttribute('aria-expanded') === 'true' ? '►' : '▼';
+                if (!btn.dataset.loaded && btn.getAttribute('aria-expanded') !== 'true'){
+                    const id = btn.dataset.bsTarget.slice('#pane-'.length);
+                    loadPane(id);
+                    btn.dataset.loaded = '1';
+                }
+            });
+        });
+
+        function loadPane(routeId){
+            const points = grouped[routeId] || [];
+
+            /* fill table */
+            const tbody = document.getElementById('tbl-'+routeId);
+            points.forEach(p=>{
+                const tr=document.createElement('tr');
+                tr.innerHTML=`<td>${p.timestamp??''}</td>
+                               <td>${p.latitude??''}</td>
+                               <td>${p.longitude??''}</td>
+                               <td>${p.rpm??''}</td>
+                               <td>${p.engineCoolantTemperature??''}</td>`;
+                tbody.appendChild(tr);
+            });
+            if (!points.length) return;
+
+            /* map */
+            const latLngs = points
+                .filter(p=>p.latitude && p.longitude)
+                .map(p=>[Number(p.latitude),Number(p.longitude)]);
+
+            const map = L.map('map-'+routeId,{scrollWheelZoom:true})
+                         .setView(latLngs[0],13);
+
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                        { attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
+
+            latLngs.forEach((ll,i)=>{
+                const p=points[i];
+                L.marker(ll).addTo(map)
+                  .bindPopup(`${p.timestamp}<br/>${p.latitude}, ${p.longitude}`);
+            });
+
+            L.polyline(latLngs,{color:'blue'}).addTo(map);
+            map.fitBounds(latLngs);
+        }
+    </script>
+}

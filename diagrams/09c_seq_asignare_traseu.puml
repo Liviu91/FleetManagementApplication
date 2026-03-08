@@ -1,0 +1,23 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Asignare Traseu la Sofer
+
+actor Administrator as admin
+participant "Web App" as web
+participant "Web API" as api
+database "FleetDB" as fdb
+
+admin -> web : Click "Asignare Traseu"
+web -> api : GET /api/trips\n(trasee neasignate)
+api --> web : Lista trasee disponibile
+web -> api : GET /api/drivers
+api --> web : Lista soferi
+
+admin -> web : Selecteaza traseu si sofer
+web -> api : PUT /api/trips/id/assign\n(DriverId)
+api -> fdb : UPDATE Trips\nSET DriverId
+api --> web : 200 OK
+web --> admin : "Traseu asignat cu succes"
+@enduml

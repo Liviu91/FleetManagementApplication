@@ -1,0 +1,18 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Afisare Trasee Sofer
+
+actor Sofer as driver
+participant "App Mobile" as app
+participant "Web API" as api
+database "FleetDB" as fdb
+
+app -> api : GET /api/trips/my + Bearer token
+api -> api : Validare JWT
+api -> fdb : SELECT Trips WHERE DriverId
+fdb --> api : Lista trasee
+api --> app : JSON cu trasee
+app --> driver : Afisare lista trasee
+@enduml

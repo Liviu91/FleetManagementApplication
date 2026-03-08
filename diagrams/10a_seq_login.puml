@@ -1,0 +1,33 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Login si Validare Credentiale
+
+actor Sofer as driver
+participant "App Mobile" as app
+participant "Web API" as api
+participant "Identity Service" as id
+database "IdentityDB" as idb
+participant "JWT Service" as jwt
+
+driver -> app : Introduce email si parola
+app -> api : POST /api/auth/login
+
+api -> id : CheckPasswordAsync
+id -> idb : SELECT AspNetUsers
+idb --> id : User gasit
+id -> id : Verificare hash parola
+id --> api : Credentiale valide
+
+api -> id : GetRolesAsync
+id --> api : Rol Driver
+
+api -> jwt : GenerateToken
+jwt -> jwt : Creare claims
+jwt -> jwt : Semnare token
+jwt --> api : JWT Token
+
+api --> app : 200 OK + Token
+app -> app : Salvare token
+@enduml

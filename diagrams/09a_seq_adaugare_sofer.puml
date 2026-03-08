@@ -1,0 +1,24 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Adaugare Sofer
+
+actor Administrator as admin
+participant "Web App" as web
+participant "Web API" as api
+participant "Identity Service" as id
+database "IdentityDB" as idb
+database "FleetDB" as fdb
+
+admin -> web : Click "Adauga Sofer"
+admin -> web : Completare date\n(Nume, Email, Telefon)
+web -> api : POST /api/drivers
+
+api -> id : CreateUser(email, password)
+id -> idb : INSERT AspNetUsers
+id -> idb : Asignare rol Driver
+api -> fdb : INSERT INTO Users
+api --> web : 201 Created
+web --> admin : "Sofer adaugat"
+@enduml

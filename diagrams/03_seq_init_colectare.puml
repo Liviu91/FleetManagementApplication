@@ -1,0 +1,31 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Secventa 2: Initializare si Colectare Date
+
+actor Sofer as driver
+participant "App Mobile" as app
+participant "Bluetooth" as bt
+participant "ELM327" as elm
+participant "Senzori Telefon" as sensors
+
+driver -> app : Deschide aplicatia
+app -> app : Autentificare JWT
+driver -> app : Selecteaza traseu, porneste cursa
+
+app -> bt : Initializare Bluetooth
+bt -> elm : Conectare dongle
+elm --> bt : Conexiune OK
+bt --> app : Bluetooth conectat
+
+loop La fiecare 5 secunde
+    app -> elm : Cerere date OBD-II
+    elm --> app : VIN, Speed, RPM,\nTemp, Pressure, DTC, Voltage
+
+    app -> sensors : Cerere GPS
+    sensors --> app : Lat, Long, Timestamp
+
+    app -> app : Stocare in coada locala
+end
+@enduml

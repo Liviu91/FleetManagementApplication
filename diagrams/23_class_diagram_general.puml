@@ -1,0 +1,144 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontSize 9
+skinparam classAttributeIconSize 0
+skinparam classFontSize 10
+skinparam packageFontSize 11
+skinparam linetype ortho
+skinparam nodesep 40
+skinparam ranksep 35
+skinparam packagePadding 10
+
+skinparam class {
+    BorderColor #333333
+    ArrowColor #555555
+    FontColor #222222
+}
+
+title Diagrama Generală de Clase
+
+' ============ MODELS (shared) ============
+package "Models" #E8F5E9 {
+    class AppUser {
+        Id, UserName, Email
+        PasswordHash, DisplayName
+    }
+    class Car {
+        Id, SerialNumber
+    }
+    class Route {
+        Id, UserId, CarId
+        Name, Status, Timestamp
+    }
+    class CarData {
+        Id, RouteId
+        RPM, Speed, VIN
+        Latitude, Longitude
+    }
+    enum Status {
+        Assigned = 0
+        Started = 1
+        Finished = 2
+    }
+}
+
+AppUser "1" -r- "*" Route
+Car "1" -l- "*" Route
+Route "1" -- "*" CarData
+Route .. Status
+
+' ============ REPOSITORY ============
+package "Repository" #E3F2FD {
+    interface "IRepository<T>" as IRepo {
+        GetAsync(), GetAll()
+        AddAsync(), UpdateAsync()
+        DeleteAsync()
+    }
+    class "Repository<T>" as Repo {
+        - DbSet<T> _dbSet
+    }
+    Repo ..|> IRepo
+}
+
+' ============ DB CONTEXT ============
+class WebAppDbContext #FFF3E0 {
+    DbSet<Car>, DbSet<Route>
+    DbSet<CarData>
+}
+
+Repo -d-> WebAppDbContext
+
+' ============ WEB APP ============
+package "Web Application" #F3E5F5 {
+    class HomeController {
+        Admin(), Driver()
+        AddUser(), AddCar()
+        AddRoute(), UpdateStatus()
+    }
+    class AuthController {
+        Login() → JWT Token
+    }
+    class DriverController {
+        GetRoutes()
+        UpdateStatus()
+    }
+}
+
+HomeController -d-> IRepo
+DriverController -d-> IRepo
+
+' ============ MOBILE APP ============
+package "Mobile App (.NET MAUI)" #BBDEFB {
+    class LoginPage {
+        OnLoginClicked()
+    }
+    class RoutesPage {
+        LoadRoutesAsync()
+        OnStartClicked()
+        OnFinishClicked()
+        StartGpsLogging()
+    }
+    class AuthService {
+        LoginAsync()
+        SetAuthHeader()
+    }
+    class RouteService {
+        GetDriverRoutesAsync()
+        UpdateRouteStatusAsync()
+    }
+    class ObdService {
+        Connect(), StartMonitoring()
+        SendObdCommand()
+    }
+    class RabbitMqService <<Mobile>> {
+        PublishAsync()
+        EnsureChannelAsync()
+    }
+}
+
+LoginPage --> AuthService
+RoutesPage --> RouteService
+RoutesPage --> ObdService
+ObdService --> RabbitMqService
+
+' ============ WORKER ============
+package "Worker Service" #FFCCBC {
+    class Worker {
+        StartAsync()
+        ExecuteAsync()
+    }
+    class AsyncEventingBasicConsumer <<RabbitMQ>> {
+        ReceivedAsync()
+    }
+}
+
+Worker --> AsyncEventingBasicConsumer
+Worker -d-> IRepo : writes to DB
+
+' ============ INTER-COMPONENT LINKS ============
+AuthService -[#2196F3,dashed]-> AuthController : <size:8>HTTP Login</size>
+RouteService -[#2196F3,dashed]-> DriverController : <size:8>HTTP Routes</size>
+RabbitMqService -[#FF5722,dashed,thickness=2]-> AsyncEventingBasicConsumer : <size:8>RabbitMQ\n"obd-data" / "gps-log"</size>
+
+@enduml

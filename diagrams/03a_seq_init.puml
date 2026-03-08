@@ -1,0 +1,20 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Secventa: Initializare Conexiune
+
+actor Sofer as driver
+participant "App Mobile" as app
+participant "Bluetooth" as bt
+participant "ELM327" as elm
+
+driver -> app : Deschide aplicatia
+app -> app : Autentificare JWT
+driver -> app : Selecteaza traseu, porneste cursa
+
+app -> bt : Initializare Bluetooth
+bt -> elm : Conectare dongle
+elm --> bt : Conexiune OK
+bt --> app : Bluetooth conectat
+@enduml

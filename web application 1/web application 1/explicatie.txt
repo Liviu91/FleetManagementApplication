@@ -1,0 +1,13 @@
+aplicatie mvc, generata din visual studio
+folosim HTTP ca metoda de comunicare
+ce inseamna mvc? paginile sunt servite de endpointuri (metode) din controller
+ce inseamna deservit de endpoint? de exemplu pagina de index.cshtml e returnata folosind metoda de index() din controllerul home
+baza de date e generata din cod folosind entity framework, cream tabelele ca si clase, le adaugam intr-o clasa facuta de noi care mosteneste dbcontext si adaugam apoi in program.cs legatura la sql server
+foreign keyurile intre tabele sunt reprezentate folosind icollection<tip de data> din clase exemplu cardata are foreign key pe usercarmapping asa ca in usercarmapping vom gasit un virtual icollection<cardata>
+operatiile pe db le facem direct in controller momentan simplu
+avem conexiunea la baza de date facuta in appsettings.json
+cum generam baza de date din cod? dai pe package manager console unde e si output/error list, folosim add-migration nume_migratie, se creeaza fisierul cu format timestamp_nume_migratie, apoi rulam update-database pentru a aplica migratia pe sql server
+folosim dependency injection in program.cs pentru a injecta obiecte in controller
+pentru a face operatiuni pe db folosim un generic repository pattern ca sa nu scriem aceleasi metode de 100 de ori pentru fiecare tip de entitate (tabela din db)
+
+https://learn.microsoft.com/en-us/aspnet/core/data/ef-mvc/intro?view=aspnetcore-9.0

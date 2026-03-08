@@ -1,0 +1,107 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontSize 13
+skinparam componentStyle rectangle
+
+title Diagrama de Componente - Cele 5 Faze
+
+' === FAZA 1: CONFIGURARE INITIALA ===
+package "FAZA 1: Configurare Inițială" #FFE0B2 {
+    component "Admin Dashboard" as admin1
+    component "Backend API" as api1
+    database "FleetDB +\nIdentityDB" as db1
+
+    admin1 -down-> api1 : Create Users,\nVehicles, Routes
+    api1 -down-> db1 : Persist\nConfiguration
+}
+
+note right of admin1
+  Admin creează:
+  - Useri (Admin/Sofer)
+  - Mașini (VIN)
+  - Trasee predefinite
+end note
+
+' === FAZA 2: INITIALIZARE COLECTARE ===
+package "FAZA 2: Inițializare Colectare" #C5E1A5 {
+    component "Mobile App" as mobile2
+    component "OBD-II + GPS" as sensors2
+    component "Backend API" as api2
+
+    mobile2 -up-> api2 : Login +\nSelect Route
+    sensors2 -down-> mobile2 : Connect\nBluetooth/GPS
+}
+
+note right of mobile2
+  Șofer:
+  - Login în aplicație
+  - Selectează traseu
+  - Conectează OBD-II
+  - Pornește colectarea
+end note
+
+' === FAZA 3: PUBLISH MESAJE ===
+package "FAZA 3: Publish Mesaje" #90CAF9 {
+    component "Mobile App" as mobile3
+    component "Local Queue" as queue3
+    component "RabbitMQ" as rmq3
+
+    mobile3 -down-> queue3 : Buffer\nTelemetry
+    queue3 -down-> rmq3 : Publish\nJSON Messages
+}
+
+note right of mobile3
+  Date colectate:
+  - VIN, Viteză, RPM
+  - Temperature, DTC
+  - GPS, Timestamp
+  - Publicate periodic
+end note
+
+' === FAZA 4: CONSUM MESAJE ===
+package "FAZA 4: Consum Mesaje" #CE93D8 {
+    component "RabbitMQ" as rmq4
+    component "Worker Service" as worker4
+    database "FleetDB" as db4
+
+    rmq4 -down-> worker4 : Consume\nMessages
+    worker4 -down-> db4 : INSERT\nTelemetry
+}
+
+note right of worker4
+  Worker Service:
+  - Consumă mesaje
+  - Validează date
+  - Procesează telemetrie
+  - Salvează în DB
+end note
+
+' === FAZA 5: VIZUALIZARE DATE ===
+package "FAZA 5: Vizualizare Date" #FFAB91 {
+    component "Web Dashboard" as web5
+    component "Backend API" as api5
+    component "SignalR Hub" as signalr5
+    database "FleetDB" as db5
+
+    web5 -down-> api5 : Query\nData
+    web5 -down-> signalr5 : Real-Time\nConnection
+    db5 -up-> api5 : Fetch\nHistoric
+    api5 -right-> signalr5 : Push\nLive Updates
+}
+
+note right of web5
+  Vizualizare:
+  - Trasee real-time
+  - Istoric telemetrie
+  - Rapoarte statistici
+  - Alerte DTC
+end note
+
+' === FLOW ARROWS BETWEEN PHASES ===
+db1 .[#blue,thickness=3].> mobile2 : Config\nReady
+mobile2 .[#blue,thickness=3].> mobile3 : Collection\nStarted
+rmq3 .[#blue,thickness=3].> rmq4 : Messages\nQueued
+db4 .[#blue,thickness=3].> db5 : Data\nPersisted
+
+@enduml

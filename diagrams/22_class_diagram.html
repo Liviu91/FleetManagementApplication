@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Class Diagram - 22_class_diagram</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            max-width: 1400px;
+            margin: 0 auto;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .diagram-info {
+            background: #e8f5e9;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        .section {
+            margin-bottom: 30px;
+        }
+        .section-title {
+            background: #f0f0f0;
+            padding: 10px;
+            border-left: 4px solid #2196F3;
+            margin-bottom: 15px;
+            font-weight: bold;
+        }
+        .package {
+            border: 1px solid #ddd;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-radius: 4px;
+        }
+        .package-name {
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #1976D2;
+        }
+        .class-item {
+            margin-left: 20px;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: #fafafa;
+            border-radius: 3px;
+        }
+        .class-name {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 8px;
+        }
+        .property {
+            font-family: monospace;
+            font-size: 0.9em;
+            margin-left: 15px;
+            color: #555;
+            line-height: 1.5;
+        }
+        .enum-item {
+            font-family: monospace;
+            margin-left: 30px;
+            color: #666;
+        }
+        .relationship {
+            font-family: monospace;
+            font-size: 0.85em;
+            color: #888;
+            margin-left: 20px;
+            padding: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Class Diagram</h1>
+        <div class="diagram-info">
+            This diagram shows the architecture of your application with Models, Repository pattern, Database context, Controllers, Worker Services, and Mobile App components.
+        </div>
+
+        <div class="section">
+            <div class="section-title">📋 Enums</div>
+            <div class="package">
+                <div class="class-name">Status</div>
+                <div class="enum-item">Assigned = 0</div>
+                <div class="enum-item">Started = 1</div>
+                <div class="enum-item">Finished = 2</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Models (Data Objects)</div>
+            <div class="package">
+                <div class="package-name">AppUser</div>
+                <div class="property">+ string Id</div>
+                <div class="property">+ string UserName</div>
+                <div class="property">+ string Email</div>
+                <div class="property">+ string PasswordHash</div>
+                <div class="property">+ string DisplayName</div>
+                <div class="property">+ ICollection&lt;Route&gt; Routes</div>
+            </div>
+
+            <div class="package">
+                <div class="package-name">Car</div>
+                <div class="property">+ int Id</div>
+                <div class="property">+ string SerialNumber</div>
+                <div class="property">+ ICollection&lt;Route&gt; Routes</div>
+            </div>
+
+            <div class="package">
+                <div class="package-name">Route</div>
+                <div class="property">+ int Id</div>
+                <div class="property">+ string UserId</div>
+                <div class="property">+ int CarId</div>
+                <div class="property">+ string Name</div>
+                <div class="property">+ string Start</div>
+                <div class="property">+ string End</div>
+                <div class="property">+ DateTime StartDate</div>
+                <div class="property">+ DateTime EndDate</div>
+                <div class="property">+ Status Status</div>
+                <div class="property">+ DateTime Timestamp</div>
+                <div class="property">+ ICollection&lt;CarData&gt; CarDatas</div>
+            </div>
+
+            <div class="package">
+                <div class="package-name">CarData</div>
+                <div class="property">+ int Id</div>
+                <div class="property">+ int RouteId</div>
+                <div class="property">+ string RPM</div>
+                <div class="property">+ string Speed</div>
+                <div class="property">+ string VIN</div>
+                <div class="property">+ string FuelType</div>
+                <div class="property">+ string EngineCoolantTemperature</div>
+                <div class="property">+ string FuelLevel</div>
+                <div class="property">+ string BatteryVoltage</div>
+                <div class="property">+ string Latitude</div>
+                <div class="property">+ string Longitude</div>
+                <div class="property">+ DateTime Timestamp</div>
+            </div>
+
+            <div class="package">
+                <div class="package-name">RouteGpsLogEntry</div>
+                <div class="property">+ int RouteId</div>
+                <div class="property">+ DateTime Timestamp</div>
+                <div class="property">+ double Latitude</div>
+                <div class="property">+ double Longitude</div>
+            </div>
+
+            <div style="margin-top: 15px; padding: 10px; background: #fff9c4; border-left: 3px solid #FBC02D;">
+                <strong>Relationships:</strong>
+                <div class="relationship">AppUser "1" -- "*" Route</div>
+                <div class="relationship">Car "1" -- "*" Route</div>
+                <div class="relationship">Route "1" -- "*" CarData</div>
+                <div class="relationship">Route .. Status</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Repository Pattern</div>
+            <div class="package">
+                <div class="package-name">IRepository&lt;T&gt; (Interface)</div>
+                <div class="property">+ GetAsync(int id) : Task&lt;T&gt;</div>
+                <div class="property">+ GetAll() : Task&lt;IQueryable&lt;T&gt;&gt;</div>
+                <div class="property">+ AddAsync(T entity) : Task</div>
+                <div class="property">+ UpdateAsync(T entity) : Task</div>
+                <div class="property">+ DeleteAsync(int id) : Task</div>
+            </div>
+
+            <div class="package">
+                <div class="package-name">Repository&lt;T&gt; (Implementation)</div>
+                <div class="property">- WebAppDbContext _context</div>
+                <div class="property">- DbSet&lt;T&gt; _dbSet</div>
+                <div class="property">+ GetAsync(int id) : Task&lt;T&gt;</div>
+                <div class="property">+ GetAll() : Task&lt;IQueryable&lt;T&gt;&gt;</div>
+                <div class="property">+ AddAsync(T entity) : Task</div>
+                <div class="property">+ UpdateAsync(T entity) : Task</div>
+                <div class="property">+ DeleteAsync(int id) : Task</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Database (Entity Framework)</div>
+            <div class="package">
+                <div class="package-name">WebAppDbContext</div>
+                <div class="property">+ DbSet&lt;Car&gt; Cars</div>
+                <div class="property">+ DbSet&lt;Route&gt; Routes</div>
+                <div class="property">+ DbSet&lt;CarData&gt; CarDatas</div>
+                <div class="property">+ OnModelCreating(ModelBuilder)</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Controllers (ASP.NET Core)</div>
+            <div class="package">
+                <div class="package-name">AuthController</div>
+                <div class="property">- UserManager&lt;AppUser&gt; _userManager</div>
+                <div class="property">- SignInManager&lt;AppUser&gt; _signInManager</div>
+                <div class="property">- IConfiguration _config</div>
+                <div class="property">+ Login(LoginDto) : Task&lt;IActionResult&gt;</div>
+            </div>
+
+            <div class="package">
+                <div class="package-name">HomeController</div>
+                <div class="property">- IRepository&lt;CarData&gt; _carDataRepo</div>
+                <div class="property">- IRepository&lt;Route&gt; _routeRepo</div>
+                <div class="property">- IRepository&lt;Car&gt; _carRepo</div>
+                <div class="property">- UserManager&lt;AppUser&gt; _userManager</div>
+                <div class="property">+ Index() : Task&lt;IActionResult&gt;</div>
+                <div class="property">+ Driver() : Task&lt;IActionResult&gt;</div>
+                <div class="property">+ Admin() : Task&lt;IActionResult&gt;</div>
+                <div class="property">+ AddUser(UserDTO) : Task&lt;IActionResult&gt;</div>
+                <div class="property">+ AddCar(CarDTO) : Task&lt;IActionResult&gt;</div>
+                <div class="property">+ AddRoute(RouteDTO) : Task&lt;IActionResult&gt;</div>
+                <div class="property">+ GetUsers() : Task&lt;IEnumerable&lt;UserDTO&gt;&gt;</div>
+                <div class="property">+ GetCars() : Task&lt;IEnumerable&lt;CarDTO&gt;&gt;</div>
+                <div class="property">+ UpdateRouteStatus(StatusUpdateDTO)</div>
+            </div>
+
+            <div class="package">
+                <div class="package-name">DriverController</div>
+                <div class="property">- IRepository&lt;Route&gt; _routeRepo</div>
+                <div class="property">- UserManager&lt;AppUser&gt; _userManager</div>
+                <div class="property">+ GetRoutes() : Task&lt;IActionResult&gt;</div>
+                <div class="property">+ UpdateStatus(UpdateRouteStatusDTO)</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Worker Service (Background Jobs)</div>
+            <div class="package">
+                <div class="package-name">Worker</div>
+                <div class="property">- IServiceScopeFactory _scopeFactory</div>
+                <div class="property">- ConnectionFactory _factory</div>
+                <div class="property">- IConnection _connection</div>
+                <div class="property">- IChannel _channel</div>
+                <div class="property">+ StartAsync(CancellationToken) : Task</div>
+                <div class="property">+ ExecuteAsync(CancellationToken) : Task</div>
+            </div>
+
+            <div class="package">
+                <div class="package-name">RabbitMqServiceWorker</div>
+                <div class="property">- IConnection _connection</div>
+                <div class="property">- IChannel _channel</div>
+                <div class="property">+ InitializeAsync() : Task</div>
+                <div class="property">+ ConsumeAsync(handler, token) : Task</div>
+                <div class="property">+ DisposeAsync() : ValueTask</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Mobile App (Xamarin/MAUI)</div>
+            <div class="package">
+                <div class="package-name">AuthService</div>
+                <div class="property">- HttpClient _httpClient</div>
+                <div class="property">+ LoginAsync(email, password) : Task&lt;string&gt;</div>
+                <div class="property">+ SetAuthHeader(token) : void</div>
+            </div>
+
+            <div class="package">
+                <div class="package-name">RouteService</div>
+                <div class="property">- HttpClient _http</div>
+                <div class="property">+ GetDriverRoutesAsync() : Task&lt;IReadOnlyList&lt;RouteDto&gt;&gt;</div>
+                <div class="property">+ UpdateRouteStatusAsync(routeId, status) : Task&lt;bool&gt;</div>
+            </div>
+
+            <div class="package">
+                <div class="package-name">RabbitMqServiceMobile</div>
+                <div class="property">- ConnectionFactory _factory</div>
+                <div class="property">- IConnection _conn</div>
+                <div class="property">- IChannel _ch</div>
+                <div class="property">+ PublishAsync(payload, routingKey) : Task</div>
+                <div class="property">+ DisposeAsync() : ValueTask</div>
+            </div>
+
+            <div class="package">
+                <div class="package-name">ObdService</div>
+                <div class="property">- RabbitMqServiceMobile _rabbitMqService</div>
+                <div class="property">- BluetoothSocket _socket</div>
+                <div class="property">+ Connect(deviceName) : Task</div>
+                <div class="property">+ StartMonitoring() : Task</div>
+                <div class="property">+ StopMonitoring() : void</div>
+                <div class="property">+ SendObdCommand(command) : Task&lt;string&gt;</div>
+                <div class="property">+ ParseRPM(response) : double</div>
+                <div class="property">+ ParseTemperature(response) : double</div>
+            </div>
+
+            <div class="package">
+                <div class="package-name">LoginPage</div>
+                <div class="property">- AuthService _authService</div>
+                <div class="property">+ OnLoginClicked() : void</div>
+            </div>
+
+            <div class="package">
+                <div class="package-name">RoutesPage</div>
+                <div class="property">- RouteService _routeService</div>
+                <div class="property">- RabbitMqServiceMobile _mq</div>
+                <div class="property">- ObdService _obdService</div>
+                <div class="property">+ LoadRoutesAsync() : Task</div>
+                <div class="property">+ OnStartClicked() : void</div>
+                <div class="property">+ OnFinishClicked() : void</div>
+                <div class="property">+ StartGpsLogging() : void</div>
+                <div class="property">+ LogPointAsync() : Task</div>
+            </div>
+        </div>
+
+        <div style="margin-top: 30px; padding: 20px; background: #e3f2fd; border-radius: 4px;">
+            <strong>Architecture Summary:</strong>
+            <ul>
+                <li><strong>Frontend (Mobile):</strong> Xamarin/MAUI app with Auth, Route management, GPS logging, and OBD data collection via Bluetooth</li>
+                <li><strong>Backend (ASP.NET Core):</strong> Controllers handling auth, admin, and driver operations</li>
+                <li><strong>Data Layer:</strong> Entity Framework Core with Repository pattern</li>
+                <li><strong>Messaging:</strong> RabbitMQ for async communication between mobile app and worker service</li>
+                <li><strong>Background Processing:</strong> Worker service consuming OBD data from RabbitMQ and storing to database</li>
+            </ul>
+        </div>
+    </div>
+</body>
+</html>

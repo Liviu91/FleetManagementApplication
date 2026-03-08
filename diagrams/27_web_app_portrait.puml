@@ -1,0 +1,138 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontSize 20
+skinparam classAttributeIconSize 0
+skinparam classFontSize 22
+skinparam packageFontSize 24
+skinparam classAttributeFontSize 20
+skinparam linetype polyline
+skinparam nodesep 20
+skinparam ranksep 25
+skinparam packagePadding 10
+
+left to right direction
+
+skinparam class {
+    BorderColor #333333
+    ArrowColor #555555
+    FontColor #222222
+}
+
+title <size:28>Structura Aplicației Web (ASP.NET Core MVC)</size>
+
+package "Controllers" #F3E5F5 {
+    class HomeController {
+        Admin()
+        Driver()
+        AddUser()
+        AddCar()
+        AddRoute()
+        UpdateStatus()
+    }
+    class AuthController {
+        Login() → JWT
+    }
+    class DriverController {
+        GetRoutes()
+        UpdateStatus()
+    }
+}
+
+package "Models" #E8F5E9 {
+    class AppUser {
+        Id, UserName, Email
+        PasswordHash
+        __
+        extinde IdentityUser
+    }
+    class Car {
+        Id, SerialNumber
+        Model, VIN
+    }
+    class Route {
+        Id, UserId, CarId
+        Name, Status
+        Start, End, Timestamp
+    }
+    class CarData {
+        Id, RouteId
+        RPM, Speed, VIN
+        FuelType, FuelLevel
+        Latitude, Longitude
+        __
+        20+ câmpuri OBD2
+    }
+    class WebAppDbContext {
+        DbSet<Car>
+        DbSet<Route>
+        DbSet<CarData>
+    }
+
+    AppUser "1" -- "*" Route
+    Car "1" -- "*" Route
+    Route "1" -- "*" CarData
+}
+
+package "Repository" #E3F2FD {
+    interface "IRepository<T>" as IRepo {
+        GetAsync()
+        GetAll()
+        AddAsync()
+        UpdateAsync()
+        DeleteAsync()
+    }
+    class "Repository<T>" as Repo
+    Repo ..|> IRepo
+}
+
+package "DTOs" #FFFDE7 {
+    class LoginDto
+    class CreateUserDTO
+    class CarDTO
+    class RouteDTO
+    class StatusUpdateDTO
+    class RouteDisplayDTO
+}
+
+package "Views (Razor)" #FFCCBC {
+    class "Admin.cshtml" as AdminV
+    class "Driver.cshtml" as DriverV
+    class "Index.cshtml" as IndexV
+}
+
+package "Helpers  |  Enums" #F5F5F5 {
+    class VinDecoder <<static>> {
+        Decode(string vin)
+    }
+    enum Status {
+        Assigned = 0
+        Started = 1
+        Finished = 2
+    }
+}
+
+' === Force vertical stacking ===
+Controllers -[hidden]d-> Models
+Models -[hidden]d-> Repository
+Repository -[hidden]d-> DTOs
+DTOs -[hidden]d-> "Views (Razor)"
+"Views (Razor)" -[hidden]d-> "Helpers  |  Enums"
+
+' === Connections ===
+HomeController --> IRepo : <size:18>CRUD</size>
+DriverController --> IRepo
+Repo --> WebAppDbContext
+
+HomeController ..> AdminV : <size:18>randează</size>
+HomeController ..> DriverV
+HomeController ..> IndexV
+
+HomeController ..> CreateUserDTO
+HomeController ..> CarDTO
+HomeController ..> RouteDTO
+AuthController ..> LoginDto
+
+Route .. Status
+
+@enduml

@@ -1,0 +1,20 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Secventa: Colectare Date
+
+participant "App Mobile" as app
+participant "ELM327" as elm
+participant "Senzori Telefon" as sensors
+
+loop La fiecare 5 secunde
+    app -> elm : Cerere date OBD-II
+    elm --> app : VIN, Speed, RPM,\nTemp, Pressure, DTC, Voltage
+
+    app -> sensors : Cerere GPS
+    sensors --> app : Lat, Long, Timestamp
+
+    app -> app : Stocare in coada locala
+end
+@enduml

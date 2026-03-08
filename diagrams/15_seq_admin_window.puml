@@ -1,0 +1,26 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Fereastra Admin - Autentificare si Dashboard
+
+actor Administrator as admin
+participant "Web App" as web
+participant "Web API" as api
+database "IdentityDB" as idb
+database "FleetDB" as fdb
+
+== Autentificare ==
+admin -> web : Introduce credentiale
+web -> api : POST /api/auth/login
+api -> idb : Verificare credentiale
+idb --> api : Valid + Rol: Admin
+api --> web : JWT Token
+web --> admin : Dashboard Admin
+
+== Vizualizare Dashboard ==
+web -> api : GET /api/dashboard/stats
+api -> fdb : COUNT soferi, masini, trasee
+api --> web : Statistici
+web --> admin : Afisare statistici
+@enduml

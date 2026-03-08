@@ -1,0 +1,35 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Secventa 1: Configurare Initiala
+
+actor Administrator as admin
+participant "Web App" as web
+participant "Web API" as api
+participant "Identity DB" as idb
+participant "Fleet DB" as fdb
+
+admin -> web : Acceseaza aplicatia
+web -> api : POST /api/auth/login
+api -> idb : Validare credentiale
+idb --> api : Valid
+api --> web : JWT Token
+web --> admin : Dashboard Admin
+
+admin -> web : Adauga sofer
+web -> api : POST /api/drivers
+api -> idb : Creare cont (rol: Driver)
+api -> fdb : INSERT Driver
+api --> web : 201 Created
+
+admin -> web : Adauga masina
+web -> api : POST /api/cars
+api -> fdb : INSERT Car
+api --> web : 201 Created
+
+admin -> web : Creeaza traseu
+web -> api : POST /api/trips
+api -> fdb : INSERT Trip (Driver + Car)
+api --> web : 201 Created
+@enduml

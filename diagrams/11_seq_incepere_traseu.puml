@@ -1,0 +1,45 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Incepere Traseu
+
+actor Sofer as driver
+participant "App Mobile" as app
+participant "Bluetooth" as bt
+participant "ELM327" as elm
+participant "GPS Service" as gps
+participant "Web API" as api
+database "FleetDB" as db
+
+driver -> app : Selecteaza traseu
+driver -> app : Apasa "Porneste Cursa"
+
+== Conectare Vehicul ==
+app -> bt : Scanare Bluetooth
+bt --> app : Dispozitive gasite
+app -> bt : Conectare ELM327
+bt -> elm : Initializare
+elm --> bt : Conexiune OK
+
+app -> elm : AT Z (Reset)
+elm --> app : ELM327 v2.1
+app -> elm : AT SP 0 (Auto protocol)
+elm --> app : OK
+
+== Verificare VIN ==
+app -> elm : 09 02 (Request VIN)
+elm --> app : VIN vehicul
+app -> app : Verificare VIN = masina asignata
+
+== Notificare Server ==
+app -> api : PUT /api/trips/{id}/start\n{StartTime, GPS_Start}
+api -> db : UPDATE Trips\nSET Status='InProgress'
+db --> api : OK
+api --> app : 200 OK
+
+== Pornire Colectare ==
+app -> gps : Pornire GPS tracking
+app -> app : Pornire timer (5s)
+app --> driver : "Cursa pornita" + Date live
+@enduml

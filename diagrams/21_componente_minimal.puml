@@ -1,0 +1,34 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontSize 13
+
+title Diagrama de Componente - Minimală
+
+[Mobile App] as mobile
+[RabbitMQ] as mq
+[Backend API] as api
+[Worker Service] as worker
+database "SQL Server" as db
+[Web Dashboard] as web
+
+mobile --> mq : Telemetry
+mobile --> api : Auth
+mq --> worker : Messages
+worker --> db : Store Data
+api --> db : CRUD
+web --> api : Requests
+
+note right of mobile
+  Colectare OBD-II + GPS
+end note
+
+note right of worker
+  Procesare asincronă
+end note
+
+note right of web
+  Vizualizare + Admin
+end note
+
+@enduml

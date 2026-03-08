@@ -1,0 +1,69 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontSize 12
+
+title Diagrama de Componente
+
+package "Aplicatia Mobile\n(.NET MAUI - Android)" {
+    [Bluetooth Manager] as bt
+    [OBD-II Reader (ELM327)] as obd
+    [GPS Sensor] as gps
+    [Local Queue] as localq
+    [RabbitMQ Publisher] as pub
+    [Driver UI] as dui
+    [Auth Module] as mauth
+}
+
+package "Message Broker" {
+    [RabbitMQ] as rmq
+}
+
+package "Backend\n(.NET Web API)" {
+    [REST API Controllers] as api
+    [Identity + JWT Auth] as auth
+    [Entity Framework Core] as ef
+    [SignalR Hub] as signalr
+}
+
+package "Worker Service\n(.NET)" {
+    [RabbitMQ Consumer] as consumer
+    [Data Processor] as proc
+    [DB Writer] as dbw
+}
+
+package "Baze de Date" {
+    database "FleetDB\n(SQL Server)" as fdb
+    database "IdentityDB\n(SQL Server)" as idb
+}
+
+package "Web Frontend" {
+    [Admin Dashboard] as adm
+    [Real-Time Monitor] as mon
+    [Route History] as hist
+}
+
+bt --> obd
+obd --> localq : VIN, Viteza, RPM,\nTemp, DTC
+gps --> localq : GPS, Timestamp
+localq --> pub
+pub --> rmq : Publish
+
+dui --> mauth
+mauth --> api : Login
+
+rmq --> consumer : Consume
+consumer --> proc
+proc --> dbw
+dbw --> fdb : INSERT
+
+api --> ef : CRUD
+ef --> fdb
+auth --> idb
+api --> auth
+api --> signalr
+
+adm --> api : HTTP
+mon --> signalr : WebSocket
+hist --> api : GET
+@enduml

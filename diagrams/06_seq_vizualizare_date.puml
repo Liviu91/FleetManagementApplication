@@ -1,0 +1,35 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Secventa 5: Vizualizare Date
+
+actor Administrator as admin
+participant "Web App" as web
+participant "Web API" as api
+participant "SignalR Hub" as hub
+database "FleetDB" as db
+
+admin -> web : Acceseaza Dashboard
+web -> api : GET /api/cars/active
+api -> db : SELECT masini active
+db --> api : Lista masini
+api --> web : JSON masini + status
+web --> admin : Harta cu vehicule
+
+web -> hub : Conectare WebSocket
+
+loop Timp real
+    hub -> db : Query pozitii noi
+    db --> hub : Date actualizate
+    hub -> web : Push (pozitie, viteza, RPM)
+    web -> web : Actualizare harta
+end
+
+admin -> web : Selecteaza vehicul
+web -> api : GET /api/cars/{id}/data
+api -> db : SELECT CarData
+db --> api : Date detaliate
+api --> web : JSON (viteza, RPM, temp, DTC)
+web --> admin : Afisare date vehicul
+@enduml

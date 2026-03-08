@@ -1,0 +1,43 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Login, Validare Credentiale si Afisare Trasee
+
+actor Sofer as driver
+participant "App Mobile" as app
+participant "Web API" as api
+participant "Identity Service" as id
+database "IdentityDB" as idb
+participant "JWT Service" as jwt
+database "FleetDB" as fdb
+
+== Autentificare ==
+driver -> app : Introduce email si parola
+app -> api : POST /api/auth/login\n{Email, Password}
+
+api -> id : CheckPasswordAsync()
+id -> idb : SELECT AspNetUsers
+idb --> id : User gasit
+id -> id : Verificare hash parola
+id --> api : Credentiale valide
+
+api -> id : GetRolesAsync(user)
+id --> api : Rol: "Driver"
+
+api -> jwt : GenerateToken(user, roles)
+jwt -> jwt : Creare claims (UserId, Role)
+jwt -> jwt : Semnare token (exp: 24h)
+jwt --> api : JWT Token
+
+api --> app : 200 OK {Token, Expiry}
+app -> app : Salvare token SecureStorage
+
+== Afisare Trasee ==
+app -> api : GET /api/trips/my\nBearer {token}
+api -> api : Validare JWT + extragere UserId
+api -> fdb : SELECT Trips\nWHERE DriverId = @userId\nJOIN Cars
+fdb --> api : Lista trasee
+api --> app : JSON [{TripId, Car, Start,\nEnd, Date, Status}]
+app --> driver : Afisare lista trasee
+@enduml

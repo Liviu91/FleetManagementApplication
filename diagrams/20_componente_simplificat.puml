@@ -1,0 +1,61 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontSize 12
+
+title Diagrama de Componente Simplificată
+
+package "Aplicația Mobile" {
+    [Mobile App\n(.NET MAUI)] as mobile
+    [OBD-II Device] as obd
+    [GPS Sensor] as gps
+}
+
+package "Message Broker" {
+    [RabbitMQ] as rmq
+}
+
+package "Backend API" {
+    [Web API\n(.NET Core)] as api
+    [Auth Service] as auth
+}
+
+package "Worker Service" {
+    [Consumer Service\n(.NET)] as worker
+}
+
+package "Baze de Date" {
+    database "FleetDB" as fdb
+    database "IdentityDB" as idb
+}
+
+package "Web Dashboard" {
+    [Admin UI] as admin
+    [Real-Time Monitor] as monitor
+}
+
+' External to Mobile
+obd --> mobile : Vehicle Data\n(Bluetooth)
+gps --> mobile : GPS Coordinates
+
+' Mobile to Broker
+mobile --> rmq : Publish Telemetry
+
+' Mobile to API
+mobile --> auth : Login/Register
+
+' Broker to Worker
+rmq --> worker : Consume Messages
+
+' Worker to DB
+worker --> fdb : Store Telemetry
+
+' API to DB
+api --> fdb : CRUD Operations
+auth --> idb : User Management
+
+' Web to API
+admin --> api : HTTP Requests
+monitor --> api : WebSocket (SignalR)
+
+@enduml

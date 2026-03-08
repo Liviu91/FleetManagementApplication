@@ -1,0 +1,40 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Initializare si Configurare Worker
+
+participant "Host Builder" as host
+participant "Worker Service" as worker
+participant "appsettings.json" as config
+participant "RabbitMQ Connection" as conn
+participant "RabbitMQ Server" as rmq
+participant "EF Core DbContext" as ef
+database "FleetDB" as db
+
+== Pornire ==
+host -> config : Citire configuratie\n(ConnectionStrings, RabbitMQ)
+config --> host : Host, Port, User, Queue, DB
+host -> worker : Instantiere Worker
+
+== Configurare DB ==
+worker -> ef : Configurare DbContext
+ef -> db : Test conexiune
+db --> ef : OK
+
+== Configurare RabbitMQ ==
+worker -> conn : ConnectionFactory\n{Host, Port, User, Pass}
+conn -> rmq : CreateConnection()
+rmq --> conn : Conexiune OK
+conn -> rmq : CreateModel()
+rmq --> conn : Canal creat
+conn -> rmq : QueueDeclare(fleet_data_queue)
+rmq --> conn : Coada OK
+conn -> rmq : BasicQos(prefetch: 10)
+
+== Inregistrare Consumer ==
+worker -> conn : BasicConsume(queue, autoAck:false)
+conn -> rmq : Inregistrare consumer
+rmq --> conn : Consumer activ
+worker --> host : Worker gata de procesare
+@enduml

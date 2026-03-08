@@ -1,0 +1,143 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontSize 9
+skinparam classAttributeIconSize 0
+skinparam classFontSize 10
+skinparam packageFontSize 11
+skinparam linetype polyline
+skinparam nodesep 30
+skinparam ranksep 30
+skinparam packagePadding 8
+
+skinparam class {
+    BorderColor #333333
+    ArrowColor #555555
+    FontColor #222222
+}
+
+title Diagrama Generală de Clase
+
+' ============ LAYOUT: top-to-bottom ============
+
+' === ROW 1: MODELS ===
+package "Models" #E8F5E9 {
+    class AppUser {
+        Id, UserName, Email
+        PasswordHash
+    }
+    class Car {
+        Id, SerialNumber
+    }
+    class Route {
+        Id, UserId, CarId
+        Name, Status
+    }
+    class CarData {
+        Id, RouteId
+        RPM, Speed, VIN
+        Latitude, Longitude
+    }
+    enum Status {
+        Assigned = 0
+        Started = 1
+        Finished = 2
+    }
+}
+
+AppUser "1" -r- "*" Route
+Car "1" -l- "*" Route
+Route "1" -d- "*" CarData
+Route .r. Status
+
+' === ROW 2: DATA LAYER ===
+package "Data Layer" #FFF3E0 {
+    class WebAppDbContext {
+        DbSet<Car>
+        DbSet<Route>
+        DbSet<CarData>
+    }
+    interface "IRepository<T>" as IRepo {
+        GetAsync(), GetAll()
+        AddAsync(), UpdateAsync()
+        DeleteAsync()
+    }
+    class "Repository<T>" as Repo
+    Repo .u.|> IRepo
+    Repo -r-> WebAppDbContext
+}
+
+' === ROW 3: Three app columns ===
+
+' --- LEFT: Web App ---
+package "Web Application\n(ASP.NET Core MVC)" #F3E5F5 {
+    class HomeController {
+        Admin(), Driver()
+        AddUser(), AddCar()
+        AddRoute()
+        UpdateStatus()
+    }
+    class AuthController {
+        Login() → JWT
+    }
+    class DriverController {
+        GetRoutes()
+        UpdateStatus()
+    }
+}
+
+HomeController -u-> IRepo
+
+' --- CENTER: Worker ---
+package "Worker Service" #FFCCBC {
+    class Worker {
+        StartAsync()
+        ExecuteAsync()
+    }
+    class "AsyncEventing\nBasicConsumer" as Consumer <<RabbitMQ>> {
+        ReceivedAsync()
+    }
+    Worker -d-> Consumer
+}
+
+Worker -u-> IRepo : writes to DB
+
+' --- RIGHT: Mobile ---
+package "Mobile App\n(.NET MAUI)" #BBDEFB {
+    class LoginPage {
+        OnLoginClicked()
+    }
+    class RoutesPage {
+        LoadRoutesAsync()
+        OnStartClicked()
+        OnFinishClicked()
+        StartGpsLogging()
+    }
+    class AuthService {
+        LoginAsync()
+    }
+    class RouteService {
+        GetDriverRoutesAsync()
+        UpdateRouteStatusAsync()
+    }
+    class ObdService {
+        Connect()
+        StartMonitoring()
+        SendObdCommand()
+    }
+    class "RabbitMqService" as RMQ <<Publisher>> {
+        PublishAsync()
+    }
+
+    LoginPage -d-> AuthService
+    RoutesPage -d-> RouteService
+    RoutesPage -d-> ObdService
+    ObdService -d-> RMQ
+}
+
+' === INTER-COMPONENT LINKS ===
+AuthService -[#2196F3,dashed]-> AuthController : <size:8>HTTP</size>
+RouteService -[#2196F3,dashed]-> DriverController : <size:8>HTTP</size>
+RMQ -[#FF5722,dashed,thickness=2]-> Consumer : <size:8>RabbitMQ\n"obd-data"\n"gps-log"</size>
+
+@enduml

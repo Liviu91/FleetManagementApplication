@@ -1,0 +1,43 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Setup Initial al Sistemului
+
+actor "Admin Sistem" as sa
+participant "SQL Server" as sql
+participant "Identity Framework" as id
+participant "RabbitMQ" as rmq
+participant "Worker Service" as worker
+participant "Web API" as api
+
+== Configurare Baze de Date ==
+sa -> sql : Creare FleetDB
+sa -> sql : Creare IdentityDB
+
+== Migrare Schema ==
+sa -> api : dotnet ef database update
+api -> id : Migratii Identity
+id -> sql : CREATE TABLES (IdentityDB)
+api -> sql : Migratii FleetDB\n(Cars, Users, CarData, Trips)
+
+== Configurare Roluri ==
+api -> id : Creare rol "Admin"
+api -> id : Creare rol "Driver"
+id -> sql : INSERT INTO AspNetRoles
+
+== Cont Admin Initial ==
+sa -> api : Seed admin user
+api -> id : Creare utilizator Admin
+id -> sql : INSERT AspNetUsers + UserRoles
+
+== Configurare RabbitMQ ==
+sa -> rmq : Creare exchange + coada
+sa -> rmq : Bind coada la exchange
+
+== Pornire Servicii ==
+sa -> worker : Pornire Worker
+worker -> rmq : Conectare la coada
+sa -> api : Pornire Web API
+api --> sa : Sistem operational
+@enduml

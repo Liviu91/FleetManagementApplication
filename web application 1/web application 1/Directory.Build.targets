@@ -1,0 +1,13 @@
+<Project>
+  <Target Name="CustomBuildLog" AfterTargets="Build">
+    <Message Text="Build completed. See build.log for details." Importance="high" />
+  </Target>
+  <PropertyGroup>
+    <BuildLogFile>$(MSBuildProjectDirectory)\build.log</BuildLogFile>
+  </PropertyGroup>
+  <Target Name="AttachFileLogger" BeforeTargets="Build">
+    <PropertyGroup>
+      <MSBuildLoggerArguments>$(MSBuildLoggerArguments) /flp:logfile=$(BuildLogFile);verbosity=detailed</MSBuildLoggerArguments>
+    </PropertyGroup>
+  </Target>
+</Project>

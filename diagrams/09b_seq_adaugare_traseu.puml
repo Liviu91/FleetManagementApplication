@@ -1,0 +1,23 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Adaugare Traseu
+
+actor Administrator as admin
+participant "Web App" as web
+participant "Web API" as api
+database "FleetDB" as fdb
+
+admin -> web : Click "Adauga Traseu"
+web -> api : GET /api/drivers
+api --> web : Lista soferi
+web -> api : GET /api/cars
+api --> web : Lista masini
+
+admin -> web : Selecteaza sofer, masina, ruta
+web -> api : POST /api/trips\n{DriverId, CarId, Start, End, Date}
+api -> fdb : INSERT INTO Trips
+api --> web : 201 Created
+web --> admin : "Traseu creat"
+@enduml

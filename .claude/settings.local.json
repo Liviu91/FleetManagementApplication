@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "Bash(cmd /c \"type c:\\\\duty\\\\Licenta\\\\Licenta\\\\lic_txt.txt\")",
+      "Bash(powershell:*)"
+    ]
+  }
+}

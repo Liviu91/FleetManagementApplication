@@ -1,0 +1,43 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+
+title Populare Baza de Date (Worker)
+
+participant "RabbitMQ" as rmq
+participant "Worker Service" as worker
+participant "JSON Deserializer" as json
+participant "Validator" as valid
+participant "EF Core" as ef
+database "FleetDB" as db
+
+rmq -> worker : Deliver mesaj (byte[])
+worker -> json : Deserializare body
+json --> worker : CarDataMessage\n{TripId, VIN, Speed, RPM,\nTemp, Voltage, Lat, Long, DTCs[]}
+
+worker -> valid : Validare date
+valid -> valid : Verificare VIN, range valori, GPS
+valid --> worker : Date valide
+
+== Salvare CarData ==
+worker -> ef : new CarData{...}
+ef -> db : INSERT INTO CarData
+db --> ef : OK
+
+== Actualizare Trip ==
+worker -> ef : FindAsync<Trip>(TripId)
+ef -> db : SELECT Trip
+db --> ef : Trip curent
+worker -> ef : Recalculare distanta,\nviteza medie, maxima
+ef -> db : UPDATE Trips
+db --> ef : OK
+
+== DTC-uri ==
+opt DTCs.Count > 0
+    worker -> ef : Adauga DTC-uri
+    ef -> db : INSERT DiagnosticCodes
+    db --> ef : OK
+end
+
+worker -> rmq : BasicAck(deliveryTag)
+@enduml

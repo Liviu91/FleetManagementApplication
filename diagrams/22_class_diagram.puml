@@ -1,0 +1,234 @@
+@startuml
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontSize 11
+skinparam classAttributeIconSize 0
+
+title Diagrama de Clase
+
+' === ENUMS ===
+enum Status {
+    Assigned = 0
+    Started = 1
+    Finished = 2
+}
+
+' === MODELS ===
+package "Models" #E8F5E9 {
+
+    class AppUser {
+        + string Id
+        + string UserName
+        + string Email
+        + string PasswordHash
+        + string DisplayName
+        + ICollection<Route> Routes
+    }
+
+    class Car {
+        + int Id
+        + string SerialNumber
+        + ICollection<Route> Routes
+    }
+
+    class Route {
+        + int Id
+        + string UserId
+        + int CarId
+        + string Name
+        + string Start
+        + string End
+        + DateTime StartDate
+        + DateTime EndDate
+        + Status Status
+        + DateTime Timestamp
+        + ICollection<CarData> CarDatas
+    }
+
+    class CarData {
+        + int Id
+        + int RouteId
+        + string RPM
+        + string Speed
+        + string VIN
+        + string FuelType
+        + string EngineCoolantTemperature
+        + string FuelLevel
+        + string BatteryVoltage
+        + string Latitude
+        + string Longitude
+        + DateTime Timestamp
+    }
+
+    class RouteGpsLogEntry {
+        + int RouteId
+        + DateTime Timestamp
+        + double Latitude
+        + double Longitude
+    }
+}
+
+' === RELATII MODELS ===
+AppUser "1" -- "*" Route
+Car "1" -- "*" Route
+Route "1" -- "*" CarData
+Route .. Status
+
+' === REPOSITORY ===
+package "Repository" #E3F2FD {
+
+    interface "IRepository<T>" as IRepo {
+        + GetAsync(int id) : Task<T>
+        + GetAll() : Task<IQueryable<T>>
+        + AddAsync(T entity) : Task
+        + UpdateAsync(T entity) : Task
+        + DeleteAsync(int id) : Task
+    }
+
+    class "Repository<T>" as Repo {
+        - WebAppDbContext _context
+        - DbSet<T> _dbSet
+        + GetAsync(int id) : Task<T>
+        + GetAll() : Task<IQueryable<T>>
+        + AddAsync(T entity) : Task
+        + UpdateAsync(T entity) : Task
+        + DeleteAsync(int id) : Task
+    }
+
+    Repo ..|> IRepo
+}
+
+' === DB CONTEXT ===
+package "Data" #FFF3E0 {
+
+    class WebAppDbContext {
+        + DbSet<Car> Cars
+        + DbSet<Route> Routes
+        + DbSet<CarData> CarDatas
+        + OnModelCreating(ModelBuilder)
+    }
+}
+
+Repo --> WebAppDbContext : uses
+
+' === CONTROLLERS ===
+package "Controllers" #F3E5F5 {
+
+    class AuthController {
+        - UserManager<AppUser> _userManager
+        - SignInManager<AppUser> _signInManager
+        - IConfiguration _config
+        + Login(LoginDto) : Task<IActionResult>
+    }
+
+    class HomeController {
+        - IRepository<CarData> _carDataRepo
+        - IRepository<Route> _routeRepo
+        - IRepository<Car> _carRepo
+        - UserManager<AppUser> _userManager
+        + Index() : Task<IActionResult>
+        + Driver() : Task<IActionResult>
+        + Admin() : Task<IActionResult>
+        + AddUser(UserDTO) : Task<IActionResult>
+        + AddCar(CarDTO) : Task<IActionResult>
+        + AddRoute(RouteDTO) : Task<IActionResult>
+        + GetUsers() : Task<IEnumerable<UserDTO>>
+        + GetCars() : Task<IEnumerable<CarDTO>>
+        + UpdateRouteStatus(StatusUpdateDTO)
+    }
+
+    class DriverController {
+        - IRepository<Route> _routeRepo
+        - UserManager<AppUser> _userManager
+        + GetRoutes() : Task<IActionResult>
+        + UpdateStatus(UpdateRouteStatusDTO)
+    }
+}
+
+HomeController --> IRepo : uses
+DriverController --> IRepo : uses
+
+' === WORKER SERVICE ===
+package "Worker Service" #FFCCBC {
+
+    class Worker {
+        - IServiceScopeFactory _scopeFactory
+        - ConnectionFactory _factory
+        - IConnection _connection
+        - IChannel _channel
+        + StartAsync(CancellationToken) : Task
+        + ExecuteAsync(CancellationToken) : Task
+    }
+
+    class RabbitMqServiceWorker {
+        - IConnection _connection
+        - IChannel _channel
+        + InitializeAsync() : Task
+        + ConsumeAsync(handler, token) : Task
+        + DisposeAsync() : ValueTask
+    }
+}
+
+Worker --> WebAppDbContext : writes to
+
+' === MOBILE APP ===
+package "Mobile App" #BBDEFB {
+
+    class AuthService {
+        - HttpClient _httpClient
+        + LoginAsync(email, password) : Task<string>
+        + SetAuthHeader(token) : void
+    }
+
+    class RouteService {
+        - HttpClient _http
+        + GetDriverRoutesAsync() : Task<IReadOnlyList<RouteDto>>
+        + UpdateRouteStatusAsync(routeId, status) : Task<bool>
+    }
+
+    class RabbitMqServiceMobile {
+        - ConnectionFactory _factory
+        - IConnection _conn
+        - IChannel _ch
+        + PublishAsync(payload, routingKey) : Task
+        + DisposeAsync() : ValueTask
+    }
+
+    class ObdService {
+        - RabbitMqServiceMobile _rabbitMqService
+        - BluetoothSocket _socket
+        + Connect(deviceName) : Task
+        + StartMonitoring() : Task
+        + StopMonitoring() : void
+        + SendObdCommand(command) : Task<string>
+        + ParseRPM(response) : double
+        + ParseTemperature(response) : double
+    }
+
+    class LoginPage {
+        - AuthService _authService
+        + OnLoginClicked() : void
+    }
+
+    class RoutesPage {
+        - RouteService _routeService
+        - RabbitMqServiceMobile _mq
+        - ObdService _obdService
+        + LoadRoutesAsync() : Task
+        + OnStartClicked() : void
+        + OnFinishClicked() : void
+        + StartGpsLogging() : void
+        + LogPointAsync() : Task
+    }
+}
+
+ObdService --> RabbitMqServiceMobile : publishes via
+LoginPage --> AuthService : uses
+RoutesPage --> RouteService : uses
+RoutesPage --> ObdService : uses
+RoutesPage --> RabbitMqServiceMobile : uses
+AuthService --> AuthController : HTTP
+RouteService --> DriverController : HTTP
+RabbitMqServiceMobile ..> Worker : RabbitMQ
+
+@enduml

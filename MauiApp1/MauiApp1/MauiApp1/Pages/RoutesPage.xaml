@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage
+    x:Class="MauiApp1.Pages.RoutesPage"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:conv="clr-namespace:MauiApp1.Converters"
+    xmlns:model="clr-namespace:MauiApp1.Model"
+    xmlns:toolkit="http://schemas.microsoft.com/dotnet/2022/maui/toolkit"
+    Title="My Routes">
+
+    <ContentPage.Resources>
+        <ResourceDictionary>
+            <conv:StatusToStartVisibleConverter  x:Key="StartVisibleConverter" />
+            <conv:StatusToFinishVisibleConverter x:Key="FinishVisibleConverter" />
+        </ResourceDictionary>
+    </ContentPage.Resources>
+
+    <!-- SINGLE SCROLLER -->
+    <ScrollView>
+        <VerticalStackLayout Padding="10" Spacing="12">
+
+            <!-- ROUTES rendered with BindableLayout instead of CollectionView -->
+            <VerticalStackLayout
+                BindableLayout.ItemsSource="{Binding Routes}"
+                BindableLayout.EmptyView="No routes">
+
+                <BindableLayout.ItemTemplate>
+                    <DataTemplate x:DataType="model:RouteDto">
+
+                        <!-- EXPAND / COLLAPSE -->
+                        <toolkit:Expander>
+
+                            <!--  HEADER  -->
+                            <toolkit:Expander.Header>
+                                <Frame Padding="10"
+                                       BorderColor="#cccccc"
+                                       CornerRadius="8">
+                                    <VerticalStackLayout Spacing="4">
+                                        <Label Text="{Binding Name}"
+                                               FontAttributes="Bold"
+                                               FontSize="18"/>
+                                        <HorizontalStackLayout>
+                                            <Label Text="{Binding Start}"/>
+                                            <Label Text=" → "/>
+                                            <Label Text="{Binding End}"/>
+                                        </HorizontalStackLayout>
+                                        <HorizontalStackLayout>
+                                            <Label Text="{Binding StartDate}"/>
+                                            <Label Text=" → "/>
+                                            <Label Text="{Binding EndDate}"/>
+                                        </HorizontalStackLayout>
+                                        <Label Text="{Binding CarSerialNumber}"/>
+                                        <Label Text="{Binding Status}"
+                                               FontAttributes="Italic"/>
+
+                                        <HorizontalStackLayout Spacing="10">
+                                            <Button Text="Start"
+                                                    BackgroundColor="Green"
+                                                    TextColor="White"
+                                                    CommandParameter="{Binding Id}"
+                                                    IsVisible="{Binding Status,
+                                                        Converter={StaticResource StartVisibleConverter}}"
+                                                    Clicked="OnStartClicked"/>
+                                            <Button Text="Finish"
+                                                    BackgroundColor="DarkOrange"
+                                                    TextColor="White"
+                                                    CommandParameter="{Binding Id}"
+                                                    IsVisible="{Binding Status,
+                                                        Converter={StaticResource FinishVisibleConverter}}"
+                                                    Clicked="OnFinishClicked"/>
+                                        </HorizontalStackLayout>
+                                    </VerticalStackLayout>
+                                </Frame>
+                            </toolkit:Expander.Header>
+
+                            <!--  GPS LOG LIST  -->
+                            <CollectionView ItemsSource="{Binding Points}"
+                                            HeightRequest="200"
+                                            ItemsUpdatingScrollMode="KeepLastItemInView">
+                                <CollectionView.EmptyView>
+                                    <Label Text="No points yet"
+                                           Padding="8"
+                                           FontAttributes="Italic"/>
+                                </CollectionView.EmptyView>
+
+                                <CollectionView.ItemTemplate>
+                                    <DataTemplate x:DataType="model:GpsLogEntry">
+                                        <HorizontalStackLayout Padding="4">
+                                            <Label Text="{Binding Timestamp,
+                                                StringFormat='{0:HH\\:mm\\:ss}'}"/>
+                                            <Label Text=" : "/>
+                                            <Label Text="{Binding Latitude,
+                                                StringFormat='{0:F6}'}"/>
+                                            <Label Text=", "/>
+                                            <Label Text="{Binding Longitude,
+                                                StringFormat='{0:F6}'}"/>
+                                        </HorizontalStackLayout>
+                                    </DataTemplate>
+                                </CollectionView.ItemTemplate>
+                            </CollectionView>
+
+                        </toolkit:Expander>
+
+                    </DataTemplate>
+                </BindableLayout.ItemTemplate>
+            </VerticalStackLayout>
+
+        </VerticalStackLayout>
+    </ScrollView>
+</ContentPage>
