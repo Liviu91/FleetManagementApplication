@@ -76,9 +76,7 @@ namespace MauiApp1
                 //c.BaseAddress = new Uri(DeviceInfo.Platform == DevicePlatform.Android
                 //                         ? "https://10.0.2.2:7292/"  // Android emulator loop-back
                 //                         : "https://localhost:7292/");
-                c.BaseAddress = new Uri(DeviceInfo.Platform == DevicePlatform.Android
-                                         ? "http://192.168.1.142:7292/"  // PC IP on local network
-                                         : "http://192.168.1.142:7292/");
+                c.BaseAddress = new Uri(AppConfig.ApiBaseUrl);
                 //c.BaseAddress = new Uri(DeviceInfo.Platform = = DevicePlatform.Android
                 //         ? "http://10.126.159.22:7292/"  // Android emulator loop-back
                 //         : "http://10.126.159.22:7292/");
@@ -92,7 +90,12 @@ namespace MauiApp1
 
             // 2.  DI registrations
             builder.Services.AddSingleton(
-                sp => sp.GetRequiredService<IHttpClientFactory>().CreateClient("ApiClient"));
+                sp =>
+                {
+                    var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("ApiClient");
+                    client.Timeout = TimeSpan.FromSeconds(30);
+                    return client;
+                });
             builder.Services.AddSingleton<AuthService>();
             builder.Services.AddSingleton<RouteService>();
             builder.Services.AddSingleton<RabbitMqService>();

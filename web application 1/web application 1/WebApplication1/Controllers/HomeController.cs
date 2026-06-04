@@ -380,11 +380,12 @@ namespace Project.Controllers
             foreach (var route in routes)
             {
                 var latestData = allCarData
-                    .Where(cd => cd.RouteId == route.Id && cd.RPM != null)
-                    .OrderByDescending(cd => cd.Timestamp)
-                    .FirstOrDefault()
-                    ?? allCarData
                     .Where(cd => cd.RouteId == route.Id)
+                    .OrderByDescending(cd => cd.Timestamp)
+                    .FirstOrDefault();
+
+                var latestObd = allCarData
+                    .Where(cd => cd.RouteId == route.Id && cd.RPM != null && cd.RPM != "0")
                     .OrderByDescending(cd => cd.Timestamp)
                     .FirstOrDefault();
 
@@ -397,18 +398,18 @@ namespace Project.Controllers
                     routeName = route.Name,
                     driverName = driver?.DisplayName ?? driver?.Email ?? "Unknown",
                     carSerialNumber = car?.SerialNumber ?? "Unknown",
-                    rpm = latestData?.RPM,
-                    speed = latestData?.Speed,
-                    throttlePosition = latestData?.ThrottlePosition,
-                    engineLoad = latestData?.EngineLoad,
-                    engineCoolantTemperature = latestData?.EngineCoolantTemperature,
-                    intakeAirTemperature = latestData?.IntakeAirTemperature,
-                    maf = latestData?.MAF,
-                    map = latestData?.MAP,
-                    fuelRailPressure = latestData?.FuelRailPressure,
-                    o2SensorVoltage = latestData?.O2SensorVoltage,
-                    lambdaValue = latestData?.LambdaValue,
-                    catalystTemperature = latestData?.CatalystTemperature,
+                    rpm = latestObd?.RPM,
+                    speed = latestObd?.Speed,
+                    throttlePosition = latestObd?.ThrottlePosition,
+                    engineLoad = latestObd?.EngineLoad,
+                    engineCoolantTemperature = latestObd?.EngineCoolantTemperature,
+                    intakeAirTemperature = latestObd?.IntakeAirTemperature,
+                    maf = latestObd?.MAF,
+                    map = latestObd?.MAP,
+                    fuelRailPressure = latestObd?.FuelRailPressure,
+                    o2SensorVoltage = latestObd?.O2SensorVoltage,
+                    lambdaValue = latestObd?.LambdaValue,
+                    catalystTemperature = latestObd?.CatalystTemperature,
                     lastUpdate = latestData?.Timestamp ?? route.StartDate
                 });
             }
@@ -455,7 +456,7 @@ namespace Project.Controllers
                 .OrderBy(cd => cd.Timestamp)
                 .ToList();
 
-            var obdEntries = carData.Where(cd => cd.RPM != null).ToList();
+            var obdEntries = carData.Where(cd => cd.RPM != null && cd.RPM != "0").ToList();
 
             // Use ALL entries with valid coordinates, deduplicated by ~3s window
             var allWithCoords = carData
@@ -475,7 +476,7 @@ namespace Project.Controllers
             DateTime lastTime = DateTime.MinValue;
             foreach (var cd in allWithCoords)
             {
-                if ((cd.Timestamp - lastTime).TotalSeconds >= 3)
+                if ((cd.Timestamp - lastTime).TotalSeconds >= 0.5)
                 {
                     deduplicated.Add(cd);
                     lastTime = cd.Timestamp;

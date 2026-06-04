@@ -23,10 +23,14 @@ namespace MauiApp1.Services
         {
             _factory = new ConnectionFactory
             {
-                HostName = "192.168.1.142",   // ← laptop IP / Rabbit host
-                Port = 5672,
-                UserName = "maui",                
-                Password = "maui",      
+                Uri = new Uri(AppConfig.RabbitMqUri),
+                Ssl = new SslOption
+                {
+                    Enabled = true,
+                    AcceptablePolicyErrors =
+                        System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors |
+                        System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch
+                }
             };
         }
 

@@ -244,7 +244,7 @@ function showAddUserModal() {
         setTimeout(() => { loadCars(); }, 200);
         setTimeout(() => { loadRoutes(); }, 300);
         
-        setInterval(loadActiveVehicles, 5000);
+        setInterval(loadActiveVehicles, 1000);
         loadActiveVehicles();
         
         $('button[data-bs-toggle="tab"]').on('shown.bs.tab', function (e) {
@@ -472,6 +472,18 @@ function showAddUserModal() {
             .then(response => response.json())
             .then(vehicles => {
                 console.log('[monitoring] vehicles:', JSON.stringify(vehicles).substring(0, 500));
+
+                // Detect new/removed active routes and refresh routes table
+                var currentIds = vehicles.map(function(v) { return v.routeId; }).sort().join(',');
+                var previousIds = knownActiveRouteIds.sort().join(',');
+                if (currentIds !== previousIds) {
+                    knownActiveRouteIds = vehicles.map(function(v) { return v.routeId; });
+                    // Refresh routes table so new statuses appear and stale expanded rows are replaced
+                    if (typeof loadRoutes === 'function' && $('#routes').hasClass('active')) {
+                        loadRoutes();
+                    }
+                }
+
                 const grid = $('#activeVehiclesGrid');
                 grid.empty();
                 
@@ -517,8 +529,11 @@ function showAddUserModal() {
             });
     }
 
-    // Track active route maps to clean up properly
+    // Track active route maps and telemetry refresh timers to clean up properly
     var routeMaps = {};
+    var routePolylines = {};
+    var routeTelemetryTimers = {};
+    var knownActiveRouteIds = [];
 
     // Load routes table
     function loadRoutes() {
@@ -592,6 +607,13 @@ function showAddUserModal() {
                 routeMaps[routeId].remove();
                 delete routeMaps[routeId];
             }
+            if (routePolylines[routeId]) {
+                delete routePolylines[routeId];
+            }
+            if (routeTelemetryTimers[routeId]) {
+                clearInterval(routeTelemetryTimers[routeId]);
+                delete routeTelemetryTimers[routeId];
+            }
         } else {
             detailsRow.show();
             expandBtn.removeClass('bi-chevron-right').addClass('bi-chevron-down');
@@ -639,11 +661,11 @@ function showAddUserModal() {
                     '<div class="col-md-4">' +
                         '<div class="telemetry-panel" id="telemetry-panel-' + routeId + '">' +
                             '<h6><i class="bi bi-speedometer2"></i> Driving Data</h6>' +
-                            '<p class="text-muted"><small>Click a point on the map to view data</small></p>' +
+                            '<p class="text-muted"><small>Click a point on the map to view data at that moment</small></p>' +
                             '<div class="row mt-3">' +
-                                '<div class="col-12 mb-3"><div class="card bg-light"><div class="card-body p-3 text-center"><div class="telemetry-label">RPM</div><div class="telemetry-value" id="tel-rpm-' + routeId + '" style="font-size:2rem">--</div></div></div></div>' +
-                                '<div class="col-12 mb-3"><div class="card bg-light"><div class="card-body p-3 text-center"><div class="telemetry-label">Speed</div><div class="telemetry-value" id="tel-speed-' + routeId + '" style="font-size:2rem">-- km/h</div></div></div></div>' +
-                                '<div class="col-12"><div class="card bg-light"><div class="card-body p-2 text-center"><div class="telemetry-label">Timestamp</div><div style="font-size:0.9rem;font-weight:600;" id="tel-time-' + routeId + '">--</div></div></div></div>' +
+                                '<div class="col-12 mb-3"><div class="card bg-light"><div class="card-body p-3 text-center"><div class="telemetry-label">RPM</div><div class="telemetry-value" id="tel-rpm-' + routeId + '" style="font-size:2rem">Loading...</div></div></div></div>' +
+                                '<div class="col-12 mb-3"><div class="card bg-light"><div class="card-body p-3 text-center"><div class="telemetry-label">Speed</div><div class="telemetry-value" id="tel-speed-' + routeId + '" style="font-size:2rem">Loading...</div></div></div></div>' +
+                                '<div class="col-12"><div class="card bg-light"><div class="card-body p-2 text-center"><div class="telemetry-label">Timestamp</div><div style="font-size:0.9rem;font-weight:600;" id="tel-time-' + routeId + '">Loading...</div></div></div></div>' +
                             '</div>' +
                         '</div>' +
                     '</div>' +
@@ -702,6 +724,16 @@ function showAddUserModal() {
             return;
         }
 
+        // Auto-populate telemetry panel with the latest data point
+        var latestWithObd = null;
+        for (var i = gpsData.length - 1; i >= 0; i--) {
+            if (gpsData[i].rpm != null) { latestWithObd = gpsData[i]; break; }
+        }
+        var latest = latestWithObd || gpsData[gpsData.length - 1];
+        $('#tel-rpm-' + routeId).text(latest.rpm || 'N/A');
+        $('#tel-speed-' + routeId).text((latest.speed || 'N/A') + ' km/h');
+        $('#tel-time-' + routeId).text(new Date(latest.timestamp).toLocaleString());
+
         try {
             var map = L.map(mapElId).setView([gpsData[0].lat, gpsData[0].lng], 13);
             routeMaps[routeId] = map;
@@ -713,6 +745,7 @@ function showAddUserModal() {
             // Route polyline
             var routeCoords = gpsData.map(function(p) { return [p.lat, p.lng]; });
             var polyline = L.polyline(routeCoords, { color: '#0d6efd', weight: 4, opacity: 0.8 }).addTo(map);
+            routePolylines[routeId] = polyline;
 
             // Start marker (green)
             L.marker([gpsData[0].lat, gpsData[0].lng], {
@@ -767,6 +800,71 @@ function showAddUserModal() {
 
             // Force Leaflet to recalculate size since container was hidden
             setTimeout(function() { map.invalidateSize(); }, 200);
+
+            // Auto-refresh telemetry panel every 3s while expanded
+            if (routeTelemetryTimers[routeId]) clearInterval(routeTelemetryTimers[routeId]);
+            var knownGpsCount = gpsData.length;
+            routeTelemetryTimers[routeId] = setInterval(function() {
+                fetch('/getRouteGpsData/' + routeId)
+                    .then(function(r) { return r.json(); })
+                    .then(function(freshData) {
+                        if (!freshData || freshData.length === 0) return;
+
+                        // Update telemetry panel with latest non-zero OBD point
+                        var latestObd = null;
+                        for (var i = freshData.length - 1; i >= 0; i--) {
+                            var p = freshData[i];
+                            if (p.rpm != null && p.rpm !== '0' && parseFloat(p.rpm) > 0) { latestObd = p; break; }
+                        }
+                        var pt = latestObd || freshData[freshData.length - 1];
+                        $('#tel-rpm-' + routeId).text(pt.rpm || 'N/A');
+                        $('#tel-speed-' + routeId).text((pt.speed || 'N/A') + ' km/h');
+                        $('#tel-time-' + routeId).text(new Date(pt.timestamp).toLocaleString());
+
+                        // Add new GPS points to the map if any arrived
+                        if (freshData.length > knownGpsCount && routeMaps[routeId]) {
+                            var newPoints = freshData.slice(knownGpsCount);
+                            knownGpsCount = freshData.length;
+
+                            var map = routeMaps[routeId];
+                            newPoints.forEach(function(point) {
+                                if (routePolylines[routeId]) {
+                                    routePolylines[routeId].addLatLng([point.lat, point.lng]);
+                                }
+                                var marker = L.circleMarker([point.lat, point.lng], {
+                                    radius: 6, fillColor: '#ff7800', color: '#fff',
+                                    weight: 2, opacity: 1, fillOpacity: 0.9
+                                }).addTo(map);
+                                marker.on('click', function() {
+                                    $('#tel-rpm-' + routeId).text(point.rpm || 'N/A');
+                                    $('#tel-speed-' + routeId).text((point.speed || 'N/A') + ' km/h');
+                                    $('#tel-time-' + routeId).text(new Date(point.timestamp).toLocaleString());
+                                });
+                                marker.bindTooltip(new Date(point.timestamp).toLocaleTimeString() + ' \u2014 ' + (point.speed || '?') + ' km/h', { direction: 'top' });
+                            });
+
+                            // Move end marker to latest point
+                            var last = freshData[freshData.length - 1];
+                            map.eachLayer(function(l) {
+                                if (l._liveEndMarker) map.removeLayer(l);
+                            });
+                            var endMarker = L.marker([last.lat, last.lng], {
+                                icon: L.icon({
+                                    iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+                                    shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+                                    iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41]
+                                })
+                            }).addTo(map);
+                            endMarker._liveEndMarker = true;
+                            endMarker.bindPopup('<b>Latest</b><br>' + new Date(last.timestamp).toLocaleString());
+
+                            // Update GPS point count label
+                            var countEl = document.querySelector('#routeMap-' + routeId + ' + p small');
+                            if (countEl) countEl.textContent = knownGpsCount + ' GPS points recorded';
+                        }
+                    })
+                    .catch(function() {});
+            }, 1000);
         } catch (e) {
             console.error('Error initializing map:', e);
         }

@@ -86,17 +86,13 @@ builder.Services
         };
     });
 
-var allowedOrigin = builder.Configuration["Cors:MobileOrigin"]      // optional config file
-                   ?? "http://10.67.157.226:7292";                  // fallback hard-coded
-
 builder.Services.AddCors(opt =>
 {
     opt.AddPolicy("MobilePolicy", p =>
     {
-        p.WithOrigins(allowedOrigin)   // exact origin of MAUI app
+        p.AllowAnyOrigin()
          .AllowAnyHeader()
-         .AllowAnyMethod()
-         .AllowCredentials();          // if you ever send cookies
+         .AllowAnyMethod();
     });
 });
 builder.WebHost.UseUrls("http://0.0.0.0:7292");

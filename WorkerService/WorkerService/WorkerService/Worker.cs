@@ -14,23 +14,24 @@ namespace WorkerService
     public class Worker : BackgroundService
     {
         private readonly ILogger<Worker> _logger;
-        //private readonly IRepository<CarData> _carDataRepository;
         private readonly IServiceScopeFactory _serviceScopeFactory;
+        private readonly IConfiguration _configuration;
         private ConnectionFactory _factory;
         private IConnection _connection;
         private IChannel _channel;
         private AsyncEventingBasicConsumer _consumer;
 
-        public Worker(ILogger<Worker> logger, IServiceScopeFactory serviceScopeFactory)
+        public Worker(ILogger<Worker> logger, IServiceScopeFactory serviceScopeFactory, IConfiguration configuration)
         {
             _logger = logger;
-            //_carDataRepository = carDataRepository;
             _serviceScopeFactory = serviceScopeFactory;
+            _configuration = configuration;
         }
 
         public override async Task StartAsync(CancellationToken cancellationToken)
         {
-            _factory = new ConnectionFactory { HostName = "localhost" };
+            var rabbitUri = _configuration["RabbitMQ:Uri"] ?? "amqp://guest:guest@localhost:5672/";
+            _factory = new ConnectionFactory { Uri = new Uri(rabbitUri) };
 
             int retries = 0;
             const int maxRetries = 10;
@@ -67,6 +68,12 @@ namespace WorkerService
                     var body = ea.Body.ToArray();
                     var message = Encoding.UTF8.GetString(body);
                     var json = JsonSerializer.Deserialize<RouteGpsLogEntry>(message);
+
+                    if (json == null || json.RouteId <= 0)
+                    {
+                        _logger.LogWarning("[RabbitMQ] Skipping GPS message with missing RouteId: {message}", message);
+                        return;
+                    }
 
                     using (var scope = _serviceScopeFactory.CreateScope())
                     {

@@ -72,16 +72,6 @@ public partial class RoutesPage : ContentPage
         _mqErrorShown = false;
         _gpsSuccessCount = 0;
 
-        // Test RabbitMQ connection
-        try
-        {
-            await _mq.PublishAsync(new { test = true }, "gps-log");
-        }
-        catch (Exception ex)
-        {
-            await DisplayAlert("RabbitMQ Error", $"Cannot connect to RabbitMQ:\n{ex.Message}", "OK");
-        }
-
         StartGpsLogging();
 
         // Start OBD monitoring on separate queue
@@ -129,7 +119,7 @@ public partial class RoutesPage : ContentPage
         _gpsCts?.Cancel();
         _gpsCts = new CancellationTokenSource();
 
-        Dispatcher.StartTimer(TimeSpan.FromMilliseconds(5000), () =>
+        Dispatcher.StartTimer(TimeSpan.FromMilliseconds(500), () =>
         {
             if (/*_gpsCts.IsCancellationRequested ||*/ _currentRoute is null)
                 return false;                            // stop timer
