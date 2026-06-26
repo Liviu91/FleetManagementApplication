@@ -315,10 +315,20 @@ namespace Project.Controllers
 
             if (Enum.TryParse<WebApplication1.Enums.Status>(dto.NewStatus, out var parsedStatus))
             {
-                if ((route.Status == WebApplication1.Enums.Status.Assigned && parsedStatus == WebApplication1.Enums.Status.Started) ||
-                    (route.Status == WebApplication1.Enums.Status.Started && parsedStatus == WebApplication1.Enums.Status.Finished))
+                // Allow: Assigned→Started, Started→Finished, Finished→Assigned (restart)
+                bool validTransition =
+                    (route.Status == WebApplication1.Enums.Status.Assigned  && parsedStatus == WebApplication1.Enums.Status.Started)  ||
+                    (route.Status == WebApplication1.Enums.Status.Started   && parsedStatus == WebApplication1.Enums.Status.Finished) ||
+                    (route.Status == WebApplication1.Enums.Status.Finished  && parsedStatus == WebApplication1.Enums.Status.Assigned);
+
+                if (validTransition)
                 {
                     route.Status = parsedStatus;
+                    // Every time a route is (re)started, stamp a fresh StartDate so that
+                    // GetRouteGpsData can use it as an exact session boundary instead of
+                    // relying on a gap heuristic that breaks when routes are restarted quickly.
+                    if (parsedStatus == WebApplication1.Enums.Status.Started)
+                        route.StartDate = DateTime.UtcNow;
                     await _routeRepository.UpdateAsync(route);
                     return Ok();
                 }
@@ -379,15 +389,24 @@ namespace Project.Controllers
 
             foreach (var route in routes)
             {
-                var latestData = allCarData
+                var routeData = allCarData
                     .Where(cd => cd.RouteId == route.Id)
-                    .OrderByDescending(cd => cd.Timestamp)
-                    .FirstOrDefault();
+                    .OrderBy(cd => cd.Timestamp)
+                    .ToList();
 
-                var latestObd = allCarData
-                    .Where(cd => cd.RouteId == route.Id && cd.RPM != null && cd.RPM != "0")
-                    .OrderByDescending(cd => cd.Timestamp)
-                    .FirstOrDefault();
+                // Only consider data from the current driving session.
+                var sessionStart = route.StartDate;
+                var sessionData = routeData.Where(cd => cd.Timestamp >= sessionStart).ToList();
+
+                var latestData = sessionData.LastOrDefault();
+                var latestObd = sessionData.LastOrDefault(cd => cd.RPM != null && cd.RPM != "0");
+
+                // OBD is only "live" if a real reading arrived within the last 15 seconds of
+                // the latest received data. When the OBD reader is disconnected, no new OBD
+                // rows arrive, so stale values from earlier are reported as N/A instead.
+                bool obdLive = latestObd != null && latestData != null
+                    && (latestData.Timestamp - latestObd.Timestamp).TotalSeconds <= 15;
+                var obd = obdLive ? latestObd : null;
 
                 var driver = users.FirstOrDefault(u => u.Id == route.UserId);
                 var car = cars.FirstOrDefault(c => c.Id == route.CarId);
@@ -398,18 +417,18 @@ namespace Project.Controllers
                     routeName = route.Name,
                     driverName = driver?.DisplayName ?? driver?.Email ?? "Unknown",
                     carSerialNumber = car?.SerialNumber ?? "Unknown",
-                    rpm = latestObd?.RPM,
-                    speed = latestObd?.Speed,
-                    throttlePosition = latestObd?.ThrottlePosition,
-                    engineLoad = latestObd?.EngineLoad,
-                    engineCoolantTemperature = latestObd?.EngineCoolantTemperature,
-                    intakeAirTemperature = latestObd?.IntakeAirTemperature,
-                    maf = latestObd?.MAF,
-                    map = latestObd?.MAP,
-                    fuelRailPressure = latestObd?.FuelRailPressure,
-                    o2SensorVoltage = latestObd?.O2SensorVoltage,
-                    lambdaValue = latestObd?.LambdaValue,
-                    catalystTemperature = latestObd?.CatalystTemperature,
+                    rpm = obd?.RPM,
+                    speed = obd?.Speed,
+                    throttlePosition = obd?.ThrottlePosition,
+                    engineLoad = obd?.EngineLoad,
+                    engineCoolantTemperature = obd?.EngineCoolantTemperature,
+                    intakeAirTemperature = obd?.IntakeAirTemperature,
+                    maf = obd?.MAF,
+                    map = obd?.MAP,
+                    fuelRailPressure = obd?.FuelRailPressure,
+                    o2SensorVoltage = obd?.O2SensorVoltage,
+                    lambdaValue = obd?.LambdaValue,
+                    catalystTemperature = obd?.CatalystTemperature,
                     lastUpdate = latestData?.Timestamp ?? route.StartDate
                 });
             }
@@ -449,17 +468,29 @@ namespace Project.Controllers
 
         [Route("getRouteGpsData/{id}")]
         [HttpGet]
-        public async Task<ActionResult> GetRouteGpsData(int id)
+        public async Task<ActionResult> GetRouteGpsData(int id, [FromQuery] DateTime? since = null)
         {
+            var route = (await _routeRepository.GetAll()).FirstOrDefault(r => r.Id == id);
+            if (route == null)
+                return NotFound();
+
             var carData = (await _carDataRepository.GetAll())
                 .Where(cd => cd.RouteId == id)
                 .OrderBy(cd => cd.Timestamp)
                 .ToList();
 
+            if (carData.Count == 0)
+                return Ok(new List<object>());
+
             var obdEntries = carData.Where(cd => cd.RPM != null && cd.RPM != "0").ToList();
 
-            // Use ALL entries with valid coordinates, deduplicated by ~3s window
-            var allWithCoords = carData
+            // Only show GPS points from the current session: anything recorded at or after
+            // the moment the driver pressed Start (StartDate is stamped fresh on every start).
+            var sessionStart = route.StartDate;
+
+            // Valid-coordinate points within the current session only.
+            var sessionWithCoords = carData
+                .Where(cd => cd.Timestamp >= sessionStart)
                 .Where(cd => !string.IsNullOrEmpty(cd.Latitude) && !string.IsNullOrEmpty(cd.Longitude))
                 .Where(cd =>
                 {
@@ -471,10 +502,10 @@ namespace Project.Controllers
                 })
                 .ToList();
 
-            // Deduplicate: keep one point per ~3 second window
+            // Deduplicate: keep one point per 0.5-second window.
             var deduplicated = new List<CarData>();
             DateTime lastTime = DateTime.MinValue;
-            foreach (var cd in allWithCoords)
+            foreach (var cd in sessionWithCoords)
             {
                 if ((cd.Timestamp - lastTime).TotalSeconds >= 0.5)
                 {
@@ -483,7 +514,14 @@ namespace Project.Controllers
                 }
             }
 
-            var gpsPoints = deduplicated.Select(cd =>
+            // Incremental polling: return only points strictly newer than 'since'. This is
+            // robust because it is based on real timestamps, not fragile list indices that
+            // shift as the deduplicated set grows.
+            var pointsToReturn = since.HasValue
+                ? deduplicated.Where(cd => cd.Timestamp > since.Value).ToList()
+                : deduplicated;
+
+            var gpsPoints = pointsToReturn.Select(cd =>
             {
                 double.TryParse(cd.Latitude, System.Globalization.NumberStyles.Any,
                     System.Globalization.CultureInfo.InvariantCulture, out var latitude);
@@ -508,6 +546,23 @@ namespace Project.Controllers
 
             return Ok(gpsPoints);
         }
+
+        // Determine the start of the current driving session for a route: the timestamp of
+        // the first point after the last gap longer than 30 minutes. Points must be ordered
+        // by Timestamp ascending. Returns the first point's timestamp if no gap exists.
+        private static DateTime FindSessionStart(List<CarData> orderedPoints)
+        {
+            if (orderedPoints.Count == 0)
+                return DateTime.MinValue;
+
+            for (int i = orderedPoints.Count - 1; i > 0; i--)
+            {
+                if ((orderedPoints[i].Timestamp - orderedPoints[i - 1].Timestamp).TotalMinutes > 30)
+                    return orderedPoints[i].Timestamp;
+            }
+            return orderedPoints[0].Timestamp;
+        }
+
 
         [Route("deleteUser/{id}")]
         [HttpDelete]

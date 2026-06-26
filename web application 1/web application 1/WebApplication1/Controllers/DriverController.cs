@@ -69,6 +69,11 @@ public class DriverController : ControllerBase
                 (route.Status == WebApplication1.Enums.Status.Started && parsedStatus == WebApplication1.Enums.Status.Finished))
             {
                 route.Status = parsedStatus;
+                if (parsedStatus == WebApplication1.Enums.Status.Started)
+                {
+                    route.StartDate = DateTime.UtcNow;
+                    route.EndDate = null;
+                }
                 if (parsedStatus == WebApplication1.Enums.Status.Finished)
                 {
                     route.EndDate = DateTime.UtcNow;

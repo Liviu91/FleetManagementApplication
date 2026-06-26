@@ -117,7 +117,7 @@ function showAddUserModal() {
             html: `
                     <form id="addCarForm">
                         <div class="form-group">
-                            <label for="swal-input1">Serial Number</label>
+                            <label for="swal-input1">Car Model</label>
                             <input type="text" id="add-serial-number" class="swal2-input" placeholder="SN000">
                         </div>
                     </form>
@@ -270,10 +270,13 @@ function showAddUserModal() {
             const activeRoutes = routes.filter(r => r.status === 'Started').length;
             $('#activeRoutes').text(activeRoutes);
 
-            // Populate recent activity
+            // Populate recent activity — sort by startDate descending so the newest 10 show
             const tbody = $('#recentActivityTable');
             tbody.empty();
-            const recent = routes.slice(0, 10);
+            const recent = routes
+                .slice()
+                .sort((a, b) => new Date(b.startDate) - new Date(a.startDate))
+                .slice(0, 10);
             if (recent.length === 0) {
                 tbody.append(`<tr><td colspan="5" class="text-center text-muted">No recent activity.</td></tr>`);
             } else {
@@ -471,8 +474,6 @@ function showAddUserModal() {
         fetch('/getActiveVehicles')
             .then(response => response.json())
             .then(vehicles => {
-                console.log('[monitoring] vehicles:', JSON.stringify(vehicles).substring(0, 500));
-
                 // Detect new/removed active routes and refresh routes table
                 var currentIds = vehicles.map(function(v) { return v.routeId; }).sort().join(',');
                 var previousIds = knownActiveRouteIds.sort().join(',');
@@ -537,6 +538,19 @@ function showAddUserModal() {
 
     // Load routes table
     function loadRoutes() {
+        // Save which route rows are currently expanded so we can restore them after rebuild
+        var expandedRouteIds = [];
+        $('#routesTableBody .route-details-row:visible').each(function() {
+            expandedRouteIds.push(parseInt(this.id.replace('route-details-', '')));
+        });
+
+        // Clean up Leaflet maps and timers for expanded rows (their DOM is about to be replaced)
+        expandedRouteIds.forEach(function(rid) {
+            if (routeMaps[rid]) { routeMaps[rid].remove(); delete routeMaps[rid]; }
+            if (routePolylines[rid]) { delete routePolylines[rid]; }
+            if (routeTelemetryTimers[rid]) { clearInterval(routeTelemetryTimers[rid]); delete routeTelemetryTimers[rid]; }
+        });
+
         var tbody = $('#routesTableBody');
         tbody.html('<tr><td colspan="7" class="text-center"><div class="spinner-border spinner-border-sm"></div> Loading routes...</td></tr>');
 
@@ -572,6 +586,20 @@ function showAddUserModal() {
                             '</td>' +
                         '</tr>'
                     );
+                });
+
+                // Restore previously expanded rows
+                expandedRouteIds.forEach(function(rid) {
+                    var matchingRoute = routes.find(function(r) { return r.id === rid; });
+                    if (matchingRoute) {
+                        var detailsRow = $('#route-details-' + rid);
+                        if (detailsRow.length) {
+                            detailsRow.show();
+                            $('.route-row[data-route-id="' + rid + '"] .expand-btn i')
+                                .removeClass('bi-chevron-right').addClass('bi-chevron-down');
+                            loadRouteDetailsInline(rid, matchingRoute.isAssigned);
+                        }
+                    }
                 });
             })
             .catch(function(error) {
@@ -642,7 +670,6 @@ function showAddUserModal() {
         .then(function(results) {
             var route = results[0];
             var gpsData = results[1];
-            console.log('[routes] gpsData count:', gpsData ? gpsData.length : 0, 'sample:', gpsData && gpsData.length > 0 ? JSON.stringify(gpsData[0]) : 'none');
 
             if (!isAssigned) {
                 detailsCell.html('<div class="p-4 text-center"><i class="bi bi-exclamation-circle text-warning" style="font-size: 2rem;"></i><h5 class="mt-2 text-muted">Not assigned</h5><p class="text-muted">This route has no driver or vehicle assigned yet.</p></div>');
@@ -801,49 +828,48 @@ function showAddUserModal() {
             // Force Leaflet to recalculate size since container was hidden
             setTimeout(function() { map.invalidateSize(); }, 200);
 
-            // Auto-refresh telemetry panel every 3s while expanded
+            // Auto-refresh the map every 2s while expanded — fetch only NEW points via ?since=timestamp.
             if (routeTelemetryTimers[routeId]) clearInterval(routeTelemetryTimers[routeId]);
             var knownGpsCount = gpsData.length;
+            var lastTs = gpsData.length > 0 ? gpsData[gpsData.length - 1].timestamp : null;
+            var lastMarkerLatLng = gpsData.length > 0 ? [gpsData[gpsData.length - 1].lat, gpsData[gpsData.length - 1].lng] : null;
+
+            var movedEnough = function(a, b) {
+                if (!a || !b) return true;
+                return Math.abs(a[0] - b[0]) > 0.00005 || Math.abs(a[1] - b[1]) > 0.00005;
+            };
+
             routeTelemetryTimers[routeId] = setInterval(function() {
-                fetch('/getRouteGpsData/' + routeId)
+                var url = '/getRouteGpsData/' + routeId + (lastTs ? '?since=' + encodeURIComponent(lastTs) : '');
+                fetch(url)
                     .then(function(r) { return r.json(); })
                     .then(function(freshData) {
                         if (!freshData || freshData.length === 0) return;
 
-                        // Update telemetry panel with latest non-zero OBD point
-                        var latestObd = null;
-                        for (var i = freshData.length - 1; i >= 0; i--) {
-                            var p = freshData[i];
-                            if (p.rpm != null && p.rpm !== '0' && parseFloat(p.rpm) > 0) { latestObd = p; break; }
-                        }
-                        var pt = latestObd || freshData[freshData.length - 1];
-                        $('#tel-rpm-' + routeId).text(pt.rpm || 'N/A');
-                        $('#tel-speed-' + routeId).text((pt.speed || 'N/A') + ' km/h');
-                        $('#tel-time-' + routeId).text(new Date(pt.timestamp).toLocaleString());
-
-                        // Add new GPS points to the map if any arrived
-                        if (freshData.length > knownGpsCount && routeMaps[routeId]) {
-                            var newPoints = freshData.slice(knownGpsCount);
-                            knownGpsCount = freshData.length;
-
-                            var map = routeMaps[routeId];
-                            newPoints.forEach(function(point) {
+                        var map = routeMaps[routeId];
+                        if (map) {
+                            freshData.forEach(function(point) {
                                 if (routePolylines[routeId]) {
                                     routePolylines[routeId].addLatLng([point.lat, point.lng]);
                                 }
-                                var marker = L.circleMarker([point.lat, point.lng], {
-                                    radius: 6, fillColor: '#ff7800', color: '#fff',
-                                    weight: 2, opacity: 1, fillOpacity: 0.9
-                                }).addTo(map);
-                                marker.on('click', function() {
-                                    $('#tel-rpm-' + routeId).text(point.rpm || 'N/A');
-                                    $('#tel-speed-' + routeId).text((point.speed || 'N/A') + ' km/h');
-                                    $('#tel-time-' + routeId).text(new Date(point.timestamp).toLocaleString());
-                                });
-                                marker.bindTooltip(new Date(point.timestamp).toLocaleTimeString() + ' \u2014 ' + (point.speed || '?') + ' km/h', { direction: 'top' });
+                                // Only drop a clickable marker when the vehicle actually moved,
+                                // to avoid piling up markers while standing still.
+                                if (movedEnough(lastMarkerLatLng, [point.lat, point.lng])) {
+                                    var marker = L.circleMarker([point.lat, point.lng], {
+                                        radius: 6, fillColor: '#ff7800', color: '#fff',
+                                        weight: 2, opacity: 1, fillOpacity: 0.9
+                                    }).addTo(map);
+                                    marker.on('click', function() {
+                                        $('#tel-rpm-' + routeId).text(point.rpm != null ? point.rpm : 'N/A');
+                                        $('#tel-speed-' + routeId).text(point.rpm != null ? ((point.speed || '0') + ' km/h') : 'N/A');
+                                        $('#tel-time-' + routeId).text(new Date(point.timestamp).toLocaleString());
+                                    });
+                                    marker.bindTooltip(new Date(point.timestamp).toLocaleTimeString() + ' \u2014 ' + (point.speed || '?') + ' km/h', { direction: 'top' });
+                                    lastMarkerLatLng = [point.lat, point.lng];
+                                }
                             });
 
-                            // Move end marker to latest point
+                            // Move the live "latest" marker to the most recent position.
                             var last = freshData[freshData.length - 1];
                             map.eachLayer(function(l) {
                                 if (l._liveEndMarker) map.removeLayer(l);
@@ -857,14 +883,25 @@ function showAddUserModal() {
                             }).addTo(map);
                             endMarker._liveEndMarker = true;
                             endMarker.bindPopup('<b>Latest</b><br>' + new Date(last.timestamp).toLocaleString());
-
-                            // Update GPS point count label
-                            var countEl = document.querySelector('#routeMap-' + routeId + ' + p small');
-                            if (countEl) countEl.textContent = knownGpsCount + ' GPS points recorded';
                         }
+
+                        // Update the live telemetry panel. Timestamp always advances to show the
+                        // feed is live; RPM/Speed show N/A unless the latest point carries OBD data.
+                        var latest = freshData[freshData.length - 1];
+                        $('#tel-rpm-' + routeId).text(latest.rpm != null ? latest.rpm : 'N/A');
+                        $('#tel-speed-' + routeId).text(latest.rpm != null ? ((latest.speed || '0') + ' km/h') : 'N/A');
+                        $('#tel-time-' + routeId).text(new Date(latest.timestamp).toLocaleString());
+
+                        knownGpsCount += freshData.length;
+                        lastTs = freshData[freshData.length - 1].timestamp;
+
+                        // Update GPS point count label so the operator sees the feed is live.
+                        var countEl = document.querySelector('#routeMap-' + routeId + ' + p small');
+                        if (countEl) countEl.textContent = knownGpsCount + ' GPS points recorded';
                     })
                     .catch(function() {});
-            }, 1000);
+            }, 2000);
+
         } catch (e) {
             console.error('Error initializing map:', e);
         }
@@ -1165,7 +1202,7 @@ function showAddUserModal() {
                             <div class="col-md-4"><div class="card bg-light"><div class="card-body p-2"><small class="text-muted">Vehicle Type</small><h6 class="mb-0">${v.vehicleType || 'N/A'}</h6></div></div></div>
                             <div class="col-md-4"><div class="card bg-light"><div class="card-body p-2"><small class="text-muted">Model Year</small><h6 class="mb-0">${v.modelYear || 'N/A'}</h6></div></div></div>
                             <div class="col-md-4"><div class="card bg-light"><div class="card-body p-2"><small class="text-muted">Plant Code</small><h6 class="mb-0">${v.plantCode || 'N/A'}</h6></div></div></div>
-                            <div class="col-md-4"><div class="card bg-light"><div class="card-body p-2"><small class="text-muted">Serial Number</small><h6 class="mb-0">${v.serialNumber || 'N/A'}</h6></div></div></div>
+                            <div class="col-md-4"><div class="card bg-light"><div class="card-body p-2"><small class="text-muted">Car Model</small><h6 class="mb-0">${v.serialNumber || 'N/A'}</h6></div></div></div>
                         </div>
                     `;
                 }

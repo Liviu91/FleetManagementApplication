@@ -26,6 +26,11 @@ namespace MauiApp1.Services
         private string? _cachedFuelType;
         private string? _cachedBatteryVoltage;
 
+        // Connection / loop resilience state
+        private string _preferredDeviceName = "OBDII";
+        private int _monitorGeneration;
+        private Task? _monitorTask;
+
         // Public properties to expose current OBD values
         public double CurrentRpm { get; private set; }
         public double CurrentSpeed { get; private set; }
@@ -45,13 +50,66 @@ namespace MauiApp1.Services
 
         public async Task Connect(string deviceName = "OBDII")
         {
+            _preferredDeviceName = deviceName;
+            await ConnectInternalAsync();
+        }
+
+        // Robust connect: resolve the paired adapter, cancel discovery, and retry a few times.
+        // Later attempts use the reflection createRfcommSocket(1) fallback — the well-known
+        // workaround for ELM327 clones that fail the secure-UUID socket with
+        // "read failed, socket might closed or timeout, read ret: -1".
+        private async Task ConnectInternalAsync(int maxAttempts = 4)
+        {
             if (_bluetoothAdapter == null)
-                throw new Exception("No Bluetooth adapter found");
-
+                throw new ObdConnectionException("No Bluetooth adapter found");
             if (!_bluetoothAdapter.IsEnabled)
-                throw new Exception("Bluetooth is not enabled");
+                throw new ObdConnectionException("Bluetooth is not enabled");
 
-            var pairedDevices = _bluetoothAdapter.BondedDevices;
+            ResolveDevice(_preferredDeviceName);
+
+            // Discovery is heavyweight and breaks RFCOMM connects — always stop it first.
+            if (_bluetoothAdapter.IsDiscovering)
+                _bluetoothAdapter.CancelDiscovery();
+
+            Exception? last = null;
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                SafeCloseSocket();                       // never reuse a half-open socket
+                await Task.Delay(attempt == 1 ? 200 : 600);
+
+                try
+                {
+                    if (_bluetoothAdapter.IsDiscovering)
+                        _bluetoothAdapter.CancelDiscovery();
+
+                    _socket = attempt < 3
+                        ? _device!.CreateRfcommSocketToServiceRecord(SppUuid)   // preferred
+                        : CreateReflectionSocket(_device!);                     // fallback
+
+                    await _socket!.ConnectAsync();
+
+                    if (_socket.IsConnected)
+                    {
+                        Debug.WriteLine($"[OBD] Connected to {_device!.Name} on attempt {attempt}");
+                        await InitializeElmAsync();
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    last = ex;
+                    Debug.WriteLine($"[OBD] Connect attempt {attempt} failed: {ex.Message}");
+                }
+            }
+
+            SafeCloseSocket();
+            throw new ObdConnectionException(
+                $"Failed to connect to OBD after {maxAttempts} attempts: {last?.Message}");
+        }
+
+        private void ResolveDevice(string deviceName)
+        {
+            var pairedDevices = _bluetoothAdapter!.BondedDevices;
 
             // Try exact name first, then partial match on common OBD adapter names
             _device = pairedDevices?.FirstOrDefault(d => d.Name == deviceName)
@@ -66,29 +124,44 @@ namespace MauiApp1.Services
                 var names = pairedDevices != null
                     ? string.Join(", ", pairedDevices.Where(d => d.Name != null).Select(d => d.Name))
                     : "none";
-                throw new Exception($"OBD device not found. Paired devices: {names}");
+                throw new ObdConnectionException($"OBD device not found. Paired devices: {names}");
             }
+        }
 
-            Debug.WriteLine($"[OBD] Connecting to: {_device.Name}");
+        // BluetoothDevice.createRfcommSocket(int channel) is a hidden API; invoke via reflection.
+        private BluetoothSocket CreateReflectionSocket(BluetoothDevice device)
+        {
+            var intType = Java.Lang.Integer.Type!;
+            var method = device.Class.GetMethod("createRfcommSocket", new[] { intType });
+            var socket = method!.Invoke(device, Java.Lang.Integer.ValueOf(1));
+            return (BluetoothSocket)socket!;
+        }
 
-            _socket = _device.CreateRfcommSocketToServiceRecord(SppUuid);
-            await _socket.ConnectAsync();
-            Debug.WriteLine($"Connected to classic Bluetooth device: {deviceName}");
-
-            // Initialize ELM327
-            await Task.Delay(500); // Give device time to settle
-            await SendObdCommand("ATZ"); // Reset
-            await Task.Delay(1000); // Wait for reset
-            await SendObdCommand("ATE0"); // Echo off
+        private async Task InitializeElmAsync()
+        {
+            await Task.Delay(500);              // let the adapter settle
+            await SendObdCommand("ATZ");        // reset
+            await Task.Delay(1000);
+            await SendObdCommand("ATE0");       // echo off
             await Task.Delay(100);
-            
-            Debug.WriteLine("ELM327 initialized");
+            await SendObdCommand("ATL0");       // linefeeds off
+            await Task.Delay(100);
+            await SendObdCommand("ATSP0");      // auto protocol — re-establishes the bus after an engine restart
+            await Task.Delay(100);
+            Debug.WriteLine("[OBD] ELM327 initialized");
 
-            // Read static values once
-            _cachedVin = await ReadVin();
-            _cachedFuelType = await ReadFuelType();
-            _cachedBatteryVoltage = await ReadBatteryVoltage();
-            Debug.WriteLine($"VIN: {_cachedVin}, FuelType: {_cachedFuelType}, Battery: {_cachedBatteryVoltage}");
+            // Static values — refresh on (re)connect but keep the previous value if a read fails.
+            _cachedVin = await ReadVin() ?? _cachedVin;
+            _cachedFuelType = await ReadFuelType() ?? _cachedFuelType;
+            _cachedBatteryVoltage = await ReadBatteryVoltage() ?? _cachedBatteryVoltage;
+            Debug.WriteLine($"[OBD] VIN:{_cachedVin} Fuel:{_cachedFuelType} Batt:{_cachedBatteryVoltage}");
+        }
+
+        private void SafeCloseSocket()
+        {
+            try { _socket?.Close(); } catch { }
+            try { _socket?.Dispose(); } catch { }
+            _socket = null;
         }
 
         private async Task<string?> ReadVin()
@@ -160,7 +233,7 @@ namespace MauiApp1.Services
             try
             {
                 var response = await QueryParameter("0151");
-                var bytes = ParseObdResponse(response);
+                var bytes = ObdProtocol.ParseResponse(response);
                 if (bytes.Length >= 3 && bytes[0] == 0x41 && bytes[1] == 0x51)
                 {
                     return bytes[2] switch
@@ -199,104 +272,155 @@ namespace MauiApp1.Services
             catch { return null; }
         }
 
-        public async Task StartMonitoring()
+        public Task StartMonitoring()
         {
-            if (_socket == null || !_socket.IsConnected)
-                throw new Exception("OBD device not connected");
-
+            // Supersede any previous loop so two routes can never poll the same socket.
+            int generation = ++_monitorGeneration;
             _isRunning = true;
+            var task = Task.Run(() => MonitorLoopAsync(generation));
+            _monitorTask = task;
+            return task;
+        }
+
+        private async Task MonitorLoopAsync(int generation)
+        {
+            var policy = new ReconnectPolicy();
             int cycle = 0;
 
             // Cached slow-cycle values
             double throttle = 0, load = 0, intakeTemp = 0, maf = 0, mapVal = 0;
             double fuelPressure = 0, o2voltage = 0, lambda = 0, catalystTemp = 0, fuelLevel = 0;
+            double rpm = 0, speed = 0, temp = 0;
 
-            while (_isRunning)
+            while (_isRunning && generation == _monitorGeneration)
             {
+                bool valid = false;
                 try
                 {
-                    // Fast PIDs — every cycle (~2s)
-                    var rpm = ParseTwoByteValue(await QueryParameter("010C"), 0x0C, 4.0);
-                    var speed = ParseOneByteValue(await QueryParameter("010D"), 0x0D);
-                    var temp = ParseOneByteOffset(await QueryParameter("0105"), 0x05, -40);
+                    // RPM is read every cycle and doubles as the connection-health probe:
+                    // a valid 41 0C frame means the link AND the vehicle bus are alive.
+                    var rpmRaw = await QueryParameter("010C");
+                    valid = ObdProtocol.TryParseTwoByteValue(rpmRaw, 0x0C, 4.0, out rpm);
 
-                    // Slow PIDs — every 5th cycle (~10s)
-                    if (cycle % 5 == 0)
+                    if (valid)
                     {
-                        throttle = ParseOneBytePercent(await QueryParameter("0111"), 0x11);
-                        load = ParseOneBytePercent(await QueryParameter("0104"), 0x04);
-                        intakeTemp = ParseOneByteOffset(await QueryParameter("010F"), 0x0F, -40);
-                        maf = ParseTwoByteValue(await QueryParameter("0110"), 0x10, 100.0);
-                        mapVal = ParseOneByteValue(await QueryParameter("010B"), 0x0B);
-                        fuelLevel = ParseOneBytePercent(await QueryParameter("012F"), 0x2F);
-                    }
+                        speed = ObdProtocol.ParseOneByteValue(await QueryParameter("010D"), 0x0D);
+                        temp = ObdProtocol.ParseOneByteOffset(await QueryParameter("0105"), 0x05, -40);
 
-                    // Very slow PIDs — every 15th cycle (~30s)
-                    if (cycle % 15 == 0)
-                    {
-                        fuelPressure = ParseTwoByteRaw(await QueryParameter("0123"), 0x23, 0.079);
-                        o2voltage = ParseO2Voltage(await QueryParameter("0114"));
-                        lambda = ParseLambda(await QueryParameter("0124"));
-                        catalystTemp = ParseCatalystTemp(await QueryParameter("013C"));
-                        _cachedBatteryVoltage = await ReadBatteryVoltage() ?? _cachedBatteryVoltage;
-                    }
-
-                    cycle++;
-
-                    
-                    
-                    
-                    
-                    
-                    
-                    
-                    CurrentRpm = rpm;
-                    CurrentSpeed = speed;
-                    CurrentTemperature = temp;
-                    LastUpdate = DateTime.Now;
-
-                    try
-                    {
-                        var carData = new CarDataDto
+                        // Slow PIDs — every 5th cycle (~10s)
+                        if (cycle % 5 == 0)
                         {
-                            RouteId = CurrentRouteId,
-                            RPM = rpm.ToString("F0"),
-                            Speed = speed.ToString("F0"),
-                            EngineCoolantTemperature = temp.ToString("F0"),
-                            ThrottlePosition = throttle.ToString("F1"),
-                            EngineLoad = load.ToString("F1"),
-                            IntakeAirTemperature = intakeTemp.ToString("F0"),
-                            MAF = maf.ToString("F2"),
-                            MAP = mapVal.ToString("F0"),
-                            FuelRailPressure = fuelPressure.ToString("F0"),
-                            O2SensorVoltage = o2voltage.ToString("F3"),
-                            LambdaValue = lambda.ToString("F3"),
-                            CatalystTemperature = catalystTemp.ToString("F0"),
-                            FuelLevel = fuelLevel.ToString("F1"),
-                            FuelType = _cachedFuelType,
-                            BatteryVoltage = _cachedBatteryVoltage,
-                            VIN = _cachedVin,
-                            Latitude = LastLatitude.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                            Longitude = LastLongitude.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                            Timestamp = DateTime.UtcNow
-                        };
-                        await _rabbitMqService.PublishAsync(carData, "obd-data");
-                    }
-                    catch (Exception pubEx)
-                    {
-                        Debug.WriteLine($"Error publishing OBD data: {pubEx.Message}");
-                    }
+                            throttle = ObdProtocol.ParseOneBytePercent(await QueryParameter("0111"), 0x11);
+                            load = ObdProtocol.ParseOneBytePercent(await QueryParameter("0104"), 0x04);
+                            intakeTemp = ObdProtocol.ParseOneByteOffset(await QueryParameter("010F"), 0x0F, -40);
+                            maf = ObdProtocol.ParseTwoByteValue(await QueryParameter("0110"), 0x10, 100.0);
+                            mapVal = ObdProtocol.ParseOneByteValue(await QueryParameter("010B"), 0x0B);
+                            fuelLevel = ObdProtocol.ParseOneBytePercent(await QueryParameter("012F"), 0x2F);
+                        }
 
-                    Debug.WriteLine($"OBD - RPM:{rpm:F0} Spd:{speed:F0} Tmp:{temp:F0} Thr:{throttle:F1}% Load:{load:F1}%");
+                        // Very slow PIDs — every 15th cycle (~30s)
+                        if (cycle % 15 == 0)
+                        {
+                            fuelPressure = ObdProtocol.ParseTwoByteRaw(await QueryParameter("0123"), 0x23, 0.079);
+                            o2voltage = ObdProtocol.ParseO2Voltage(await QueryParameter("0114"));
+                            lambda = ObdProtocol.ParseLambda(await QueryParameter("0124"));
+                            catalystTemp = ObdProtocol.ParseCatalystTemp(await QueryParameter("013C"));
+                            _cachedBatteryVoltage = await ReadBatteryVoltage() ?? _cachedBatteryVoltage;
+                        }
+
+                        cycle++;
+
+                        CurrentRpm = rpm;
+                        CurrentSpeed = speed;
+                        CurrentTemperature = temp;
+                        LastUpdate = DateTime.Now;
+
+                        try
+                        {
+                            var carData = new CarDataDto
+                            {
+                                RouteId = CurrentRouteId,
+                                RPM = rpm.ToString("F0"),
+                                Speed = speed.ToString("F0"),
+                                EngineCoolantTemperature = temp.ToString("F0"),
+                                ThrottlePosition = throttle.ToString("F1"),
+                                EngineLoad = load.ToString("F1"),
+                                IntakeAirTemperature = intakeTemp.ToString("F0"),
+                                MAF = maf.ToString("F2"),
+                                MAP = mapVal.ToString("F0"),
+                                FuelRailPressure = fuelPressure.ToString("F0"),
+                                O2SensorVoltage = o2voltage.ToString("F3"),
+                                LambdaValue = lambda.ToString("F3"),
+                                CatalystTemperature = catalystTemp.ToString("F0"),
+                                FuelLevel = fuelLevel.ToString("F1"),
+                                FuelType = _cachedFuelType,
+                                BatteryVoltage = _cachedBatteryVoltage,
+                                VIN = _cachedVin,
+                                Latitude = LastLatitude.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                                Longitude = LastLongitude.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                                Timestamp = DateTime.UtcNow
+                            };
+                            await _rabbitMqService.PublishAsync(carData, "obd-data");
+                        }
+                        catch (Exception pubEx)
+                        {
+                            Debug.WriteLine($"Error publishing OBD data: {pubEx.Message}");
+                        }
+
+                        Debug.WriteLine($"OBD - RPM:{rpm:F0} Spd:{speed:F0} Tmp:{temp:F0} Thr:{throttle:F1}% Load:{load:F1}%");
+                    }
+                    else
+                    {
+                        Debug.WriteLine($"[OBD] No valid frame (raw='{rpmRaw?.Trim()}')");
+                    }
+                }
+                catch (ObdConnectionException ex)
+                {
+                    valid = false;
+                    Debug.WriteLine($"[OBD] Connection error: {ex.Message}");
                 }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine($"Error reading OBD data: {ex.Message}");
-                    await Task.Delay(3000); // Shorter retry wait
+                    valid = false;
+                    Debug.WriteLine($"[OBD] Read error: {ex.Message}");
                 }
 
-                await Task.Delay(500); // Faster polling (adjustable)
+                if (valid)
+                {
+                    policy.RecordSuccess();
+                    await Task.Delay(500); // normal polling cadence
+                    continue;
+                }
+
+                // Invalid read or transport error. Count it and, once the threshold is reached,
+                // fully reconnect with a capped backoff. This is what makes telemetry resume
+                // after the engine stops and restarts (start-stop) and recovers dropped sockets.
+                policy.RecordFailure();
+                if (policy.ShouldReconnect)
+                {
+                    var backoff = policy.NextBackoff();
+                    Debug.WriteLine($"[OBD] Telemetry lost, reconnecting in {backoff.TotalSeconds:F0}s (attempt {policy.ReconnectAttempts})");
+                    await Task.Delay(backoff);
+                    if (!_isRunning || generation != _monitorGeneration) break;
+
+                    try
+                    {
+                        await ConnectInternalAsync();
+                        policy.RecordSuccess();
+                        Debug.WriteLine("[OBD] Reconnected — telemetry resumed");
+                    }
+                    catch (Exception rex)
+                    {
+                        Debug.WriteLine($"[OBD] Reconnect failed: {rex.Message}");
+                    }
+                }
+                else
+                {
+                    await Task.Delay(500);
+                }
             }
+
+            Debug.WriteLine($"[OBD] Monitor loop {generation} exited");
         }
 
         private async Task<Location?> GetCurrentLocation()
@@ -338,6 +462,10 @@ namespace MauiApp1.Services
             {
                 return await SendObdCommand(command);
             }
+            catch (ObdConnectionException)
+            {
+                throw;   // transport down -> bubble up so the monitor loop reconnects
+            }
             catch (Exception ex)
             {
                 Debug.WriteLine($"Query failed for {command}: {ex.Message}");
@@ -348,22 +476,23 @@ namespace MauiApp1.Services
         public void StopMonitoring()
         {
             _isRunning = false;
-            _socket?.Close();
-            _socket = null!;
+            _monitorGeneration++;   // invalidate the running loop so it cannot resurrect
+            SafeCloseSocket();       // unblock any in-flight read
         }
 
         private async Task<string> SendObdCommand(string command, int timeoutMs = 2000)
         {
-            if (_socket == null || !_socket.IsConnected)
-                throw new Exception("Not connected to device");
+            var socket = _socket;
+            if (socket == null || !socket.IsConnected)
+                throw new ObdConnectionException("Not connected to device");
 
             try
             {
-                var inputStream = _socket.InputStream;
-                var outputStream = _socket.OutputStream;
+                var inputStream = socket.InputStream;
+                var outputStream = socket.OutputStream;
 
                 if (inputStream == null || outputStream == null)
-                    throw new Exception("Unable to get socket streams");
+                    throw new ObdConnectionException("Unable to get socket streams");
 
                 var bytes = Encoding.ASCII.GetBytes(command + "\r");
                 await outputStream.WriteAsync(bytes, 0, bytes.Length);
@@ -376,7 +505,10 @@ namespace MauiApp1.Services
                 while (true)
                 {
                     var bytesRead = await inputStream.ReadAsync(buffer, 0, buffer.Length);
-                    
+
+                    if (bytesRead < 0)
+                        throw new ObdConnectionException("Socket stream closed (read returned -1)");
+
                     if (bytesRead > 0)
                     {
                         string chunk = Encoding.ASCII.GetString(buffer, 0, bytesRead);
@@ -388,7 +520,7 @@ namespace MauiApp1.Services
 
                     if ((DateTime.Now - startTime).TotalMilliseconds > timeoutMs)
                     {
-                        Debug.WriteLine($"Timeout reading response for command: {command}");
+                        Debug.WriteLine($"[OBD] Timeout reading response for command: {command}");
                         break;
                     }
                 }
@@ -397,126 +529,16 @@ namespace MauiApp1.Services
                 Debug.WriteLine($"CMD: {command} -> {result.Replace("\r", "\\r").Replace("\n", "\\n")}");
                 return result;
             }
-            catch (Exception ex)
+            catch (ObdConnectionException)
             {
-                Debug.WriteLine($"Error sending OBD command '{command}': {ex.Message}");
                 throw;
             }
-        }
-
-        private byte[] ParseObdResponse(string response)
-        {
-            try
-            {
-                // Remove unwanted characters
-                response = response.Replace("\r", "").Replace("\n", "")
-                                   .Replace(">", "").Replace(" ", "").Trim();
-
-                // Remove common ELM327 responses
-                response = response.Replace("SEARCHING...", "")
-                                   .Replace("NODATA", "")
-                                   .Replace("OK", "");
-
-                if (string.IsNullOrWhiteSpace(response) || response.Length < 4)
-                {
-                    Debug.WriteLine($"Invalid OBD response: '{response}'");
-                    return new byte[0];
-                }
-
-                // Parse hex bytes (format: 410C1A2B -> 41 0C 1A 2B)
-                var bytes = new List<byte>();
-                for (int i = 0; i < response.Length; i += 2)
-                {
-                    if (i + 1 < response.Length)
-                    {
-                        string hex = response.Substring(i, 2);
-                        if (byte.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out byte b))
-                        {
-                            bytes.Add(b);
-                        }
-                    }
-                }
-
-                return bytes.ToArray();
-            }
             catch (Exception ex)
             {
-                Debug.WriteLine($"Error parsing OBD response '{response}': {ex.Message}");
-                return new byte[0];
+                // Any write/read failure here means the Bluetooth transport is down
+                // (covers both System.IO.IOException and Java.IO.IOException) -> reconnect.
+                throw new ObdConnectionException($"I/O error on '{command}': {ex.Message}", ex);
             }
-        }
-
-        // Generic parsers for OBD-II PIDs
-        // Two-byte value with divisor: ((A*256)+B)/divisor — RPM(010C /4), MAF(0110 /100)
-        private double ParseTwoByteValue(string raw, byte pid, double divisor)
-        {
-            var b = ParseObdResponse(raw);
-            if (b.Length >= 4 && b[0] == 0x41 && b[1] == pid)
-                return ((b[2] * 256) + b[3]) / divisor;
-            return 0;
-        }
-
-        // One-byte direct value: A — Speed(010D), MAP(010B)
-        private double ParseOneByteValue(string raw, byte pid)
-        {
-            var b = ParseObdResponse(raw);
-            if (b.Length >= 3 && b[0] == 0x41 && b[1] == pid)
-                return b[2];
-            return 0;
-        }
-
-        // One-byte with offset: A + offset — Coolant(0105 -40), IntakeAir(010F -40)
-        private double ParseOneByteOffset(string raw, byte pid, int offset)
-        {
-            var b = ParseObdResponse(raw);
-            if (b.Length >= 3 && b[0] == 0x41 && b[1] == pid)
-                return b[2] + offset;
-            return 0;
-        }
-
-        // One-byte percentage: A * 100/255 — Throttle(0111), Load(0104), FuelLevel(012F)
-        private double ParseOneBytePercent(string raw, byte pid)
-        {
-            var b = ParseObdResponse(raw);
-            if (b.Length >= 3 && b[0] == 0x41 && b[1] == pid)
-                return b[2] * 100.0 / 255.0;
-            return 0;
-        }
-
-        // Two-byte raw with multiplier: ((A*256)+B)*multiplier — FuelRail(0123 *0.079)
-        private double ParseTwoByteRaw(string raw, byte pid, double multiplier)
-        {
-            var b = ParseObdResponse(raw);
-            if (b.Length >= 4 && b[0] == 0x41 && b[1] == pid)
-                return ((b[2] * 256) + b[3]) * multiplier;
-            return 0;
-        }
-
-        // O2 sensor voltage (0114): A/200 volts
-        private double ParseO2Voltage(string raw)
-        {
-            var b = ParseObdResponse(raw);
-            if (b.Length >= 3 && b[0] == 0x41 && b[1] == 0x14)
-                return b[2] / 200.0;
-            return 0;
-        }
-
-        // Lambda/equivalence ratio (0124): ((A*256)+B)/32768
-        private double ParseLambda(string raw)
-        {
-            var b = ParseObdResponse(raw);
-            if (b.Length >= 4 && b[0] == 0x41 && b[1] == 0x24)
-                return ((b[2] * 256) + b[3]) / 32768.0;
-            return 0;
-        }
-
-        // Catalyst temperature (013C): ((A*256)+B)/10 - 40
-        private double ParseCatalystTemp(string raw)
-        {
-            var b = ParseObdResponse(raw);
-            if (b.Length >= 4 && b[0] == 0x41 && b[1] == 0x3C)
-                return ((b[2] * 256) + b[3]) / 10.0 - 40;
-            return 0;
         }
     }
 }
