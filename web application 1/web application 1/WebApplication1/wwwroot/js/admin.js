@@ -479,8 +479,12 @@ function showAddUserModal() {
                 var previousIds = knownActiveRouteIds.sort().join(',');
                 if (currentIds !== previousIds) {
                     knownActiveRouteIds = vehicles.map(function(v) { return v.routeId; });
-                    // Refresh routes table so new statuses appear and stale expanded rows are replaced
-                    if (typeof loadRoutes === 'function' && $('#routes').hasClass('active')) {
+                    // Refresh routes table so new statuses appear and stale expanded rows are replaced.
+                    // BUT never rebuild while a route detail row is expanded: rebuilding destroys the
+                    // live Leaflet map and its polling timer, which made the live polyline appear to
+                    // "freeze". The status refresh can safely wait until the operator collapses the row.
+                    var hasExpandedDetails = $('#routesTableBody .route-details-row:visible').length > 0;
+                    if (typeof loadRoutes === 'function' && $('#routes').hasClass('active') && !hasExpandedDetails) {
                         loadRoutes();
                     }
                 }
@@ -840,6 +844,13 @@ function showAddUserModal() {
             };
 
             routeTelemetryTimers[routeId] = setInterval(function() {
+                // Self-heal: if this route's detail row was collapsed or rebuilt, the map is gone.
+                // Stop polling so we never fetch for, or draw onto, a torn-down map.
+                if (!routeMaps[routeId] || !$('#route-details-' + routeId).is(':visible')) {
+                    clearInterval(routeTelemetryTimers[routeId]);
+                    delete routeTelemetryTimers[routeId];
+                    return;
+                }
                 var url = '/getRouteGpsData/' + routeId + (lastTs ? '?since=' + encodeURIComponent(lastTs) : '');
                 fetch(url)
                     .then(function(r) { return r.json(); })

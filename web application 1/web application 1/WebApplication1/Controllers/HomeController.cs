@@ -18,6 +18,13 @@ namespace Project.Controllers
         private readonly IRepository<Driver> _userRepository;
         private readonly UserManager<AppUser> _userManager;
 
+        // OBD telemetry is considered live only if the latest real OBD reading is at most this
+        // many seconds newer-than-stale relative to the rest of the feed.
+        private const int ObdStaleSeconds = 15;
+        // The whole telemetry feed (GPS + OBD) is considered dead if nothing at all arrived
+        // within this window relative to the server clock. This catches a full device
+        // disconnect, where the previous heuristic kept showing the last frozen values forever.
+        private const int FeedStaleSeconds = 15;
 
         public HomeController(IRepository<CarData> carDataRepository, IRepository<Route> routeRepository, IRepository<Car> carRepository, IRepository<Driver> userRepository, UserManager<AppUser> userManager)
         {
@@ -395,17 +402,22 @@ namespace Project.Controllers
                     .ToList();
 
                 // Only consider data from the current driving session.
-                var sessionStart = route.StartDate;
-                var sessionData = routeData.Where(cd => cd.Timestamp >= sessionStart).ToList();
+                var sessionStart = AsUtc(route.StartDate);
+                var sessionData = routeData.Where(cd => AsUtc(cd.Timestamp) >= sessionStart).ToList();
 
                 var latestData = sessionData.LastOrDefault();
                 var latestObd = sessionData.LastOrDefault(cd => cd.RPM != null && cd.RPM != "0");
 
-                // OBD is only "live" if a real reading arrived within the last 15 seconds of
-                // the latest received data. When the OBD reader is disconnected, no new OBD
-                // rows arrive, so stale values from earlier are reported as N/A instead.
+                // OBD is only "live" when BOTH hold:
+                //  1. a real OBD reading arrived close to the latest received data (catches the
+                //     OBD reader dropping out while GPS keeps streaming), and
+                //  2. the feed itself is still producing data right now (catches a full device
+                //     disconnect where no GPS or OBD rows arrive at all). Without (2) the last
+                //     frozen reading would be reported as live indefinitely.
+                var nowUtc = DateTime.UtcNow;
                 bool obdLive = latestObd != null && latestData != null
-                    && (latestData.Timestamp - latestObd.Timestamp).TotalSeconds <= 15;
+                    && (AsUtc(latestData.Timestamp) - AsUtc(latestObd.Timestamp)).TotalSeconds <= ObdStaleSeconds
+                    && (nowUtc - AsUtc(latestData.Timestamp)).TotalSeconds <= FeedStaleSeconds;
                 var obd = obdLive ? latestObd : null;
 
                 var driver = users.FirstOrDefault(u => u.Id == route.UserId);
@@ -429,7 +441,7 @@ namespace Project.Controllers
                     o2SensorVoltage = obd?.O2SensorVoltage,
                     lambdaValue = obd?.LambdaValue,
                     catalystTemperature = obd?.CatalystTemperature,
-                    lastUpdate = latestData?.Timestamp ?? route.StartDate
+                    lastUpdate = AsUtc(latestData?.Timestamp ?? route.StartDate)
                 });
             }
 
@@ -486,11 +498,11 @@ namespace Project.Controllers
 
             // Only show GPS points from the current session: anything recorded at or after
             // the moment the driver pressed Start (StartDate is stamped fresh on every start).
-            var sessionStart = route.StartDate;
+            var sessionStart = AsUtc(route.StartDate);
 
             // Valid-coordinate points within the current session only.
             var sessionWithCoords = carData
-                .Where(cd => cd.Timestamp >= sessionStart)
+                .Where(cd => AsUtc(cd.Timestamp) >= sessionStart)
                 .Where(cd => !string.IsNullOrEmpty(cd.Latitude) && !string.IsNullOrEmpty(cd.Longitude))
                 .Where(cd =>
                 {
@@ -516,9 +528,12 @@ namespace Project.Controllers
 
             // Incremental polling: return only points strictly newer than 'since'. This is
             // robust because it is based on real timestamps, not fragile list indices that
-            // shift as the deduplicated set grows.
-            var pointsToReturn = since.HasValue
-                ? deduplicated.Where(cd => cd.Timestamp > since.Value).ToList()
+            // shift as the deduplicated set grows. 'since' is normalized to UTC so the value
+            // the browser echoes back (from the UTC timestamp we serialized) compares correctly
+            // no matter what local time zone the server runs in.
+            var sinceUtc = since.HasValue ? AsUtc(since.Value) : (DateTime?)null;
+            var pointsToReturn = sinceUtc.HasValue
+                ? deduplicated.Where(cd => AsUtc(cd.Timestamp) > sinceUtc.Value).ToList()
                 : deduplicated;
 
             var gpsPoints = pointsToReturn.Select(cd =>
@@ -541,11 +556,24 @@ namespace Project.Controllers
                     }
                 }
 
-                return new { lat = latitude, lng = longitude, timestamp = cd.Timestamp, rpm, speed };
+                return new { lat = latitude, lng = longitude, timestamp = AsUtc(cd.Timestamp), rpm, speed };
             }).ToList();
 
             return Ok(gpsPoints);
         }
+
+        // Normalize a DateTime read from the DB into an explicit UTC value. The MAUI app and the
+        // worker both timestamp data with DateTime.UtcNow, but SQL Server's datetime2 column does
+        // not preserve DateTimeKind, so EF returns the values as Kind=Unspecified. Serializing
+        // those without a zone designator (and re-parsing the ?since echo) is timezone-ambiguous
+        // and was a likely cause of the live map appearing frozen. Forcing UTC end-to-end makes
+        // the polling round-trip deterministic regardless of the server's local time zone.
+        private static DateTime AsUtc(DateTime value) => value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+        };
 
         // Determine the start of the current driving session for a route: the timestamp of
         // the first point after the last gap longer than 30 minutes. Points must be ordered
