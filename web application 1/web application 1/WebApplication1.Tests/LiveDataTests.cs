@@ -225,6 +225,69 @@ public class LiveDataTests
         Assert.All(points, p => Assert.True(p.GetProperty("lat").GetDouble() > 40));
     }
 
+    /// <summary>
+    /// The regression test for "the route renders too short / only a couple of points". The
+    /// session boundary must come from the telemetry timestamps, NOT from route.StartDate. Here
+    /// StartDate is stamped three minutes AFTER the drive (simulating the driver's phone clock
+    /// lagging the server clock). The old <c>cd.Timestamp &gt;= StartDate</c> filter dropped the
+    /// whole drive; the data-driven boundary must still render every point.
+    /// </summary>
+    [Fact]
+    public async Task GetRouteGpsData_RendersFullDrive_EvenWhenStartDateIsAfterTheData()
+    {
+        var route = StartedRoute(Base.AddMinutes(3)); // server clock ahead of the phone
+        var data = new[]
+        {
+            Gps(0, 45.10, 25.10),
+            Gps(1, 45.11, 25.11),
+            Gps(2, 45.12, 25.12),
+            Gps(3, 45.13, 25.13)
+        };
+        var controller = GpsController(route, data);
+
+        var points = Points(await controller.GetRouteGpsData(RouteId));
+
+        Assert.Equal(4, points.Count);
+    }
+
+    [Fact]
+    public async Task GetRouteGpsData_RendersOnlyTheLastSession_AfterALongGap()
+    {
+        // A previous drive, then a 25-minute gap (> SessionGapMinutes), then the current drive.
+        var route = StartedRoute(Base);
+        var data = new[]
+        {
+            Gps(0, 10.0, 10.0),
+            Gps(60, 10.1, 10.1),
+            Gps(60 + 25 * 60, 45.10, 25.10),
+            Gps(60 + 25 * 60 + 1, 45.11, 25.11)
+        };
+        var controller = GpsController(route, data);
+
+        var points = Points(await controller.GetRouteGpsData(RouteId));
+
+        Assert.Equal(2, points.Count);
+        Assert.All(points, p => Assert.True(p.GetProperty("lat").GetDouble() > 40));
+    }
+
+    [Fact]
+    public async Task GetRouteGpsData_KeepsBriefStopWithinOneSession()
+    {
+        // A 5-minute stop (< SessionGapMinutes) is part of the same drive, so nothing is dropped.
+        var route = StartedRoute(Base);
+        var data = new[]
+        {
+            Gps(0, 45.10, 25.10),
+            Gps(5 * 60, 45.11, 25.11),
+            Gps(5 * 60 + 1, 45.12, 25.12)
+        };
+        var controller = GpsController(route, data);
+
+        var points = Points(await controller.GetRouteGpsData(RouteId));
+
+        Assert.Equal(3, points.Count);
+    }
+
     // ----------------------------------------------------------------------------------------
     // GetActiveVehicles — live OBD telemetry cards
     // ----------------------------------------------------------------------------------------

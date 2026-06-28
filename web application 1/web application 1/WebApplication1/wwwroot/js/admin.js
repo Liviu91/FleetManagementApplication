@@ -727,13 +727,14 @@ function showAddUserModal() {
 
             // Initialize map after DOM is updated
             if (gpsData && gpsData.length > 0) {
+                var routeStatus = route.status;
                 setTimeout(function() {
                     if (typeof L === 'undefined') {
                         loadLeaflet(function() {
-                            initRouteMapInline(routeId, gpsData);
+                            initRouteMapInline(routeId, gpsData, routeStatus);
                         });
                     } else {
-                        initRouteMapInline(routeId, gpsData);
+                        initRouteMapInline(routeId, gpsData, routeStatus);
                     }
                 }, 500);
             }
@@ -745,7 +746,7 @@ function showAddUserModal() {
     }
 
     // Initialize inline Leaflet map with clickable GPS points
-    function initRouteMapInline(routeId, gpsData) {
+    function initRouteMapInline(routeId, gpsData, routeStatus) {
         var mapElId = 'routeMap-' + routeId;
         var mapEl = document.getElementById(mapElId);
         if (!mapEl) return;
@@ -755,15 +756,24 @@ function showAddUserModal() {
             return;
         }
 
-        // Auto-populate telemetry panel with the latest data point
-        var latestWithObd = null;
-        for (var i = gpsData.length - 1; i >= 0; i--) {
-            if (gpsData[i].rpm != null) { latestWithObd = gpsData[i]; break; }
+        // Live RPM/Speed are only meaningful while the route is actively Started. For a finished
+        // (or not-yet-started) route the panel must read N/A rather than the last frozen reading;
+        // historical values remain inspectable by clicking individual points on the map.
+        var latest = gpsData[gpsData.length - 1];
+        if (routeStatus === 'Started') {
+            var latestWithObd = null;
+            for (var i = gpsData.length - 1; i >= 0; i--) {
+                if (gpsData[i].rpm != null) { latestWithObd = gpsData[i]; break; }
+            }
+            var live = latestWithObd || latest;
+            $('#tel-rpm-' + routeId).text(live.rpm != null ? live.rpm : 'N/A');
+            $('#tel-speed-' + routeId).text(live.rpm != null ? ((live.speed || '0') + ' km/h') : 'N/A');
+            $('#tel-time-' + routeId).text(new Date(live.timestamp).toLocaleString());
+        } else {
+            $('#tel-rpm-' + routeId).text('N/A');
+            $('#tel-speed-' + routeId).text('N/A');
+            $('#tel-time-' + routeId).text(latest ? new Date(latest.timestamp).toLocaleString() : 'N/A');
         }
-        var latest = latestWithObd || gpsData[gpsData.length - 1];
-        $('#tel-rpm-' + routeId).text(latest.rpm || 'N/A');
-        $('#tel-speed-' + routeId).text((latest.speed || 'N/A') + ' km/h');
-        $('#tel-time-' + routeId).text(new Date(latest.timestamp).toLocaleString());
 
         try {
             var map = L.map(mapElId).setView([gpsData[0].lat, gpsData[0].lng], 13);
@@ -837,6 +847,9 @@ function showAddUserModal() {
             var knownGpsCount = gpsData.length;
             var lastTs = gpsData.length > 0 ? gpsData[gpsData.length - 1].timestamp : null;
             var lastMarkerLatLng = gpsData.length > 0 ? [gpsData[gpsData.length - 1].lat, gpsData[gpsData.length - 1].lng] : null;
+            // Track whether the route was live on the previous tick so we can reset the telemetry
+            // panel to N/A exactly once when it finishes.
+            var wasLive = (routeStatus === 'Started');
 
             var movedEnough = function(a, b) {
                 if (!a || !b) return true;
@@ -851,6 +864,18 @@ function showAddUserModal() {
                     delete routeTelemetryTimers[routeId];
                     return;
                 }
+
+                // The moment a route leaves the active-vehicles set it has finished: reset the live
+                // RPM/Speed to N/A exactly once. We keep polling afterwards only to append any final
+                // trailing points to the map, and never repaint live telemetry again, so a click on
+                // a historical point stays visible.
+                var liveNow = knownActiveRouteIds.indexOf(routeId) !== -1;
+                if (wasLive && !liveNow) {
+                    $('#tel-rpm-' + routeId).text('N/A');
+                    $('#tel-speed-' + routeId).text('N/A');
+                }
+                wasLive = liveNow;
+
                 var url = '/getRouteGpsData/' + routeId + (lastTs ? '?since=' + encodeURIComponent(lastTs) : '');
                 fetch(url)
                     .then(function(r) { return r.json(); })
@@ -896,12 +921,15 @@ function showAddUserModal() {
                             endMarker.bindPopup('<b>Latest</b><br>' + new Date(last.timestamp).toLocaleString());
                         }
 
-                        // Update the live telemetry panel. Timestamp always advances to show the
-                        // feed is live; RPM/Speed show N/A unless the latest point carries OBD data.
-                        var latest = freshData[freshData.length - 1];
-                        $('#tel-rpm-' + routeId).text(latest.rpm != null ? latest.rpm : 'N/A');
-                        $('#tel-speed-' + routeId).text(latest.rpm != null ? ((latest.speed || '0') + ' km/h') : 'N/A');
-                        $('#tel-time-' + routeId).text(new Date(latest.timestamp).toLocaleString());
+                        // Refresh the live RPM/Speed only while the route is still active. Once it
+                        // has finished (reset to N/A above) the panel is left untouched so it does
+                        // not flash back to the last streamed reading.
+                        if (knownActiveRouteIds.indexOf(routeId) !== -1) {
+                            var latest = freshData[freshData.length - 1];
+                            $('#tel-rpm-' + routeId).text(latest.rpm != null ? latest.rpm : 'N/A');
+                            $('#tel-speed-' + routeId).text(latest.rpm != null ? ((latest.speed || '0') + ' km/h') : 'N/A');
+                            $('#tel-time-' + routeId).text(new Date(latest.timestamp).toLocaleString());
+                        }
 
                         knownGpsCount += freshData.length;
                         lastTs = freshData[freshData.length - 1].timestamp;

@@ -25,6 +25,12 @@ namespace Project.Controllers
         // within this window relative to the server clock. This catches a full device
         // disconnect, where the previous heuristic kept showing the last frozen values forever.
         private const int FeedStaleSeconds = 15;
+        // A new driving session is assumed to begin after any gap in telemetry longer than this.
+        // The current session is derived from the data itself (see FindSessionStart) instead of
+        // the server-stamped StartDate, which made finished routes render "too short". Large
+        // enough to absorb in-drive stops (traffic lights, loading) yet small enough to separate
+        // genuinely distinct drives.
+        private const int SessionGapMinutes = 20;
 
         public HomeController(IRepository<CarData> carDataRepository, IRepository<Route> routeRepository, IRepository<Car> carRepository, IRepository<Driver> userRepository, UserManager<AppUser> userManager)
         {
@@ -401,8 +407,11 @@ namespace Project.Controllers
                     .OrderBy(cd => cd.Timestamp)
                     .ToList();
 
-                // Only consider data from the current driving session.
-                var sessionStart = AsUtc(route.StartDate);
+                // Only consider data from the current driving session. The boundary is derived
+                // from the telemetry timestamps themselves (gap heuristic) rather than the
+                // server-stamped StartDate, so it is immune to clock skew between the server and
+                // the driver's phone — the same skew that made finished routes render "too short".
+                var sessionStart = FindSessionStart(routeData);
                 var sessionData = routeData.Where(cd => AsUtc(cd.Timestamp) >= sessionStart).ToList();
 
                 var latestData = sessionData.LastOrDefault();
@@ -496,9 +505,13 @@ namespace Project.Controllers
 
             var obdEntries = carData.Where(cd => cd.RPM != null && cd.RPM != "0").ToList();
 
-            // Only show GPS points from the current session: anything recorded at or after
-            // the moment the driver pressed Start (StartDate is stamped fresh on every start).
-            var sessionStart = AsUtc(route.StartDate);
+            // Only show GPS points from the current driving session. The session boundary is the
+            // first point after the last long gap in the telemetry (see FindSessionStart) — derived
+            // purely from the phone-stamped timestamps. The previous boundary compared those phone
+            // timestamps against route.StartDate (a server-clock value); when the phone clock lagged
+            // the server, the start of the drive fell before StartDate and was silently dropped,
+            // rendering the route "too short" or as just a couple of points.
+            var sessionStart = FindSessionStart(carData);
 
             // Valid-coordinate points within the current session only.
             var sessionWithCoords = carData
@@ -575,20 +588,24 @@ namespace Project.Controllers
             _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
         };
 
-        // Determine the start of the current driving session for a route: the timestamp of
-        // the first point after the last gap longer than 30 minutes. Points must be ordered
-        // by Timestamp ascending. Returns the first point's timestamp if no gap exists.
+        // Determine the start of the current driving session for a route: the timestamp of the
+        // first point after the most recent gap longer than SessionGapMinutes. Points must be
+        // ordered by Timestamp ascending. Because it only ever compares phone-stamped timestamps
+        // to each other (all normalized to UTC), the result is independent of the server clock and
+        // therefore of any skew between the server and the driver's phone. Returns the first
+        // point's timestamp when there is no such gap, and DateTime.MinValue (UTC) for an empty
+        // set so every point passes the >= sessionStart filter.
         private static DateTime FindSessionStart(List<CarData> orderedPoints)
         {
             if (orderedPoints.Count == 0)
-                return DateTime.MinValue;
+                return DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc);
 
             for (int i = orderedPoints.Count - 1; i > 0; i--)
             {
-                if ((orderedPoints[i].Timestamp - orderedPoints[i - 1].Timestamp).TotalMinutes > 30)
-                    return orderedPoints[i].Timestamp;
+                if ((AsUtc(orderedPoints[i].Timestamp) - AsUtc(orderedPoints[i - 1].Timestamp)).TotalMinutes > SessionGapMinutes)
+                    return AsUtc(orderedPoints[i].Timestamp);
             }
-            return orderedPoints[0].Timestamp;
+            return AsUtc(orderedPoints[0].Timestamp);
         }
 
 
