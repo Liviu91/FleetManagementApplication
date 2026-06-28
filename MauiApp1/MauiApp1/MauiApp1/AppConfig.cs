@@ -17,3 +17,4 @@ namespace MauiApp1
         public const string RabbitMqUri = "amqps://urcobeue:zqakedWFbst8L7Fhb3wirUHsz4MDt7Ai@seal.lmq.cloudamqp.com/urcobeue";
     }
 }
+ 

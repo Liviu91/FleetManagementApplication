@@ -18,6 +18,13 @@ namespace Project.Controllers
         private readonly IRepository<Driver> _userRepository;
         private readonly UserManager<AppUser> _userManager;
 
+        // OBD telemetry is considered live only if the latest real OBD reading is at most this
+        // many seconds newer-than-stale relative to the rest of the feed.
+        private const int ObdStaleSeconds = 15;
+        // The whole telemetry feed (GPS + OBD) is considered dead if nothing at all arrived
+        // within this window relative to the server clock. This catches a full device
+        // disconnect, where the previous heuristic kept showing the last frozen values forever.
+        private const int FeedStaleSeconds = 15;
 
         public HomeController(IRepository<CarData> carDataRepository, IRepository<Route> routeRepository, IRepository<Car> carRepository, IRepository<Driver> userRepository, UserManager<AppUser> userManager)
         {
@@ -315,10 +322,20 @@ namespace Project.Controllers
 
             if (Enum.TryParse<WebApplication1.Enums.Status>(dto.NewStatus, out var parsedStatus))
             {
-                if ((route.Status == WebApplication1.Enums.Status.Assigned && parsedStatus == WebApplication1.Enums.Status.Started) ||
-                    (route.Status == WebApplication1.Enums.Status.Started && parsedStatus == WebApplication1.Enums.Status.Finished))
+                // Allow: Assigned→Started, Started→Finished, Finished→Assigned (restart)
+                bool validTransition =
+                    (route.Status == WebApplication1.Enums.Status.Assigned  && parsedStatus == WebApplication1.Enums.Status.Started)  ||
+                    (route.Status == WebApplication1.Enums.Status.Started   && parsedStatus == WebApplication1.Enums.Status.Finished) ||
+                    (route.Status == WebApplication1.Enums.Status.Finished  && parsedStatus == WebApplication1.Enums.Status.Assigned);
+
+                if (validTransition)
                 {
                     route.Status = parsedStatus;
+                    // Every time a route is (re)started, stamp a fresh StartDate so that
+                    // GetRouteGpsData can use it as an exact session boundary instead of
+                    // relying on a gap heuristic that breaks when routes are restarted quickly.
+                    if (parsedStatus == WebApplication1.Enums.Status.Started)
+                        route.StartDate = DateTime.UtcNow;
                     await _routeRepository.UpdateAsync(route);
                     return Ok();
                 }
@@ -379,15 +396,29 @@ namespace Project.Controllers
 
             foreach (var route in routes)
             {
-                var latestData = allCarData
+                var routeData = allCarData
                     .Where(cd => cd.RouteId == route.Id)
-                    .OrderByDescending(cd => cd.Timestamp)
-                    .FirstOrDefault();
+                    .OrderBy(cd => cd.Timestamp)
+                    .ToList();
 
-                var latestObd = allCarData
-                    .Where(cd => cd.RouteId == route.Id && cd.RPM != null && cd.RPM != "0")
-                    .OrderByDescending(cd => cd.Timestamp)
-                    .FirstOrDefault();
+                // Only consider data from the current driving session.
+                var sessionStart = AsUtc(route.StartDate);
+                var sessionData = routeData.Where(cd => AsUtc(cd.Timestamp) >= sessionStart).ToList();
+
+                var latestData = sessionData.LastOrDefault();
+                var latestObd = sessionData.LastOrDefault(cd => cd.RPM != null && cd.RPM != "0");
+
+                // OBD is only "live" when BOTH hold:
+                //  1. a real OBD reading arrived close to the latest received data (catches the
+                //     OBD reader dropping out while GPS keeps streaming), and
+                //  2. the feed itself is still producing data right now (catches a full device
+                //     disconnect where no GPS or OBD rows arrive at all). Without (2) the last
+                //     frozen reading would be reported as live indefinitely.
+                var nowUtc = DateTime.UtcNow;
+                bool obdLive = latestObd != null && latestData != null
+                    && (AsUtc(latestData.Timestamp) - AsUtc(latestObd.Timestamp)).TotalSeconds <= ObdStaleSeconds
+                    && (nowUtc - AsUtc(latestData.Timestamp)).TotalSeconds <= FeedStaleSeconds;
+                var obd = obdLive ? latestObd : null;
 
                 var driver = users.FirstOrDefault(u => u.Id == route.UserId);
                 var car = cars.FirstOrDefault(c => c.Id == route.CarId);
@@ -398,19 +429,19 @@ namespace Project.Controllers
                     routeName = route.Name,
                     driverName = driver?.DisplayName ?? driver?.Email ?? "Unknown",
                     carSerialNumber = car?.SerialNumber ?? "Unknown",
-                    rpm = latestObd?.RPM,
-                    speed = latestObd?.Speed,
-                    throttlePosition = latestObd?.ThrottlePosition,
-                    engineLoad = latestObd?.EngineLoad,
-                    engineCoolantTemperature = latestObd?.EngineCoolantTemperature,
-                    intakeAirTemperature = latestObd?.IntakeAirTemperature,
-                    maf = latestObd?.MAF,
-                    map = latestObd?.MAP,
-                    fuelRailPressure = latestObd?.FuelRailPressure,
-                    o2SensorVoltage = latestObd?.O2SensorVoltage,
-                    lambdaValue = latestObd?.LambdaValue,
-                    catalystTemperature = latestObd?.CatalystTemperature,
-                    lastUpdate = latestData?.Timestamp ?? route.StartDate
+                    rpm = obd?.RPM,
+                    speed = obd?.Speed,
+                    throttlePosition = obd?.ThrottlePosition,
+                    engineLoad = obd?.EngineLoad,
+                    engineCoolantTemperature = obd?.EngineCoolantTemperature,
+                    intakeAirTemperature = obd?.IntakeAirTemperature,
+                    maf = obd?.MAF,
+                    map = obd?.MAP,
+                    fuelRailPressure = obd?.FuelRailPressure,
+                    o2SensorVoltage = obd?.O2SensorVoltage,
+                    lambdaValue = obd?.LambdaValue,
+                    catalystTemperature = obd?.CatalystTemperature,
+                    lastUpdate = AsUtc(latestData?.Timestamp ?? route.StartDate)
                 });
             }
 
@@ -449,17 +480,29 @@ namespace Project.Controllers
 
         [Route("getRouteGpsData/{id}")]
         [HttpGet]
-        public async Task<ActionResult> GetRouteGpsData(int id)
+        public async Task<ActionResult> GetRouteGpsData(int id, [FromQuery] DateTime? since = null)
         {
+            var route = (await _routeRepository.GetAll()).FirstOrDefault(r => r.Id == id);
+            if (route == null)
+                return NotFound();
+
             var carData = (await _carDataRepository.GetAll())
                 .Where(cd => cd.RouteId == id)
                 .OrderBy(cd => cd.Timestamp)
                 .ToList();
 
+            if (carData.Count == 0)
+                return Ok(new List<object>());
+
             var obdEntries = carData.Where(cd => cd.RPM != null && cd.RPM != "0").ToList();
 
-            // Use ALL entries with valid coordinates, deduplicated by ~3s window
-            var allWithCoords = carData
+            // Only show GPS points from the current session: anything recorded at or after
+            // the moment the driver pressed Start (StartDate is stamped fresh on every start).
+            var sessionStart = AsUtc(route.StartDate);
+
+            // Valid-coordinate points within the current session only.
+            var sessionWithCoords = carData
+                .Where(cd => AsUtc(cd.Timestamp) >= sessionStart)
                 .Where(cd => !string.IsNullOrEmpty(cd.Latitude) && !string.IsNullOrEmpty(cd.Longitude))
                 .Where(cd =>
                 {
@@ -471,10 +514,10 @@ namespace Project.Controllers
                 })
                 .ToList();
 
-            // Deduplicate: keep one point per ~3 second window
+            // Deduplicate: keep one point per 0.5-second window.
             var deduplicated = new List<CarData>();
             DateTime lastTime = DateTime.MinValue;
-            foreach (var cd in allWithCoords)
+            foreach (var cd in sessionWithCoords)
             {
                 if ((cd.Timestamp - lastTime).TotalSeconds >= 0.5)
                 {
@@ -483,7 +526,17 @@ namespace Project.Controllers
                 }
             }
 
-            var gpsPoints = deduplicated.Select(cd =>
+            // Incremental polling: return only points strictly newer than 'since'. This is
+            // robust because it is based on real timestamps, not fragile list indices that
+            // shift as the deduplicated set grows. 'since' is normalized to UTC so the value
+            // the browser echoes back (from the UTC timestamp we serialized) compares correctly
+            // no matter what local time zone the server runs in.
+            var sinceUtc = since.HasValue ? AsUtc(since.Value) : (DateTime?)null;
+            var pointsToReturn = sinceUtc.HasValue
+                ? deduplicated.Where(cd => AsUtc(cd.Timestamp) > sinceUtc.Value).ToList()
+                : deduplicated;
+
+            var gpsPoints = pointsToReturn.Select(cd =>
             {
                 double.TryParse(cd.Latitude, System.Globalization.NumberStyles.Any,
                     System.Globalization.CultureInfo.InvariantCulture, out var latitude);
@@ -503,11 +556,41 @@ namespace Project.Controllers
                     }
                 }
 
-                return new { lat = latitude, lng = longitude, timestamp = cd.Timestamp, rpm, speed };
+                return new { lat = latitude, lng = longitude, timestamp = AsUtc(cd.Timestamp), rpm, speed };
             }).ToList();
 
             return Ok(gpsPoints);
         }
+
+        // Normalize a DateTime read from the DB into an explicit UTC value. The MAUI app and the
+        // worker both timestamp data with DateTime.UtcNow, but SQL Server's datetime2 column does
+        // not preserve DateTimeKind, so EF returns the values as Kind=Unspecified. Serializing
+        // those without a zone designator (and re-parsing the ?since echo) is timezone-ambiguous
+        // and was a likely cause of the live map appearing frozen. Forcing UTC end-to-end makes
+        // the polling round-trip deterministic regardless of the server's local time zone.
+        private static DateTime AsUtc(DateTime value) => value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+        };
+
+        // Determine the start of the current driving session for a route: the timestamp of
+        // the first point after the last gap longer than 30 minutes. Points must be ordered
+        // by Timestamp ascending. Returns the first point's timestamp if no gap exists.
+        private static DateTime FindSessionStart(List<CarData> orderedPoints)
+        {
+            if (orderedPoints.Count == 0)
+                return DateTime.MinValue;
+
+            for (int i = orderedPoints.Count - 1; i > 0; i--)
+            {
+                if ((orderedPoints[i].Timestamp - orderedPoints[i - 1].Timestamp).TotalMinutes > 30)
+                    return orderedPoints[i].Timestamp;
+            }
+            return orderedPoints[0].Timestamp;
+        }
+
 
         [Route("deleteUser/{id}")]
         [HttpDelete]
