@@ -21,15 +21,21 @@ namespace MauiApp1.Services
         private BluetoothDevice? _device;
         private readonly UUID SppUuid = UUID.FromString("00001101-0000-1000-8000-00805F9B34FB");
 
-        private bool _isRunning;
         private string? _cachedVin;
         private string? _cachedFuelType;
         private string? _cachedBatteryVoltage;
 
         // Connection / loop resilience state
+        private const int ConnectTimeoutMs = 8000;     // hard cap so a wedged adapter can't block a connect forever
         private string _preferredDeviceName = "OBDII";
-        private int _monitorGeneration;
         private Task? _monitorTask;
+        private CancellationTokenSource? _sessionCts;
+        private ObdConnectionManager? _manager;
+
+        // Per-session telemetry cache (slow PIDs persist between poll cycles)
+        private int _cycle;
+        private double _throttle, _load, _intakeTemp, _maf, _mapVal;
+        private double _fuelPressure, _o2voltage, _lambda, _catalystTemp, _fuelLevel;
 
         // Public properties to expose current OBD values
         public double CurrentRpm { get; private set; }
@@ -58,7 +64,7 @@ namespace MauiApp1.Services
         // Later attempts use the reflection createRfcommSocket(1) fallback — the well-known
         // workaround for ELM327 clones that fail the secure-UUID socket with
         // "read failed, socket might closed or timeout, read ret: -1".
-        private async Task ConnectInternalAsync(int maxAttempts = 4)
+        private async Task ConnectInternalAsync(CancellationToken ct = default, int maxAttempts = 4)
         {
             if (_bluetoothAdapter == null)
                 throw new ObdConnectionException("No Bluetooth adapter found");
@@ -74,8 +80,9 @@ namespace MauiApp1.Services
             Exception? last = null;
             for (int attempt = 1; attempt <= maxAttempts; attempt++)
             {
+                ct.ThrowIfCancellationRequested();       // route ended — abandon the connect, no orphan socket
                 SafeCloseSocket();                       // never reuse a half-open socket
-                await Task.Delay(attempt == 1 ? 200 : 600);
+                await Task.Delay(attempt == 1 ? 200 : 600, ct);
 
                 try
                 {
@@ -86,7 +93,9 @@ namespace MauiApp1.Services
                         ? _device!.CreateRfcommSocketToServiceRecord(SppUuid)   // preferred
                         : CreateReflectionSocket(_device!);                     // fallback
 
-                    await _socket!.ConnectAsync();
+                    // Hard timeout: a wedged clone can otherwise block ConnectAsync indefinitely,
+                    // which is what produced the "Bluetooth blinks several times then hangs" symptom.
+                    await _socket!.ConnectAsync().WaitAsync(TimeSpan.FromMilliseconds(ConnectTimeoutMs), ct);
 
                     if (_socket.IsConnected)
                     {
@@ -95,9 +104,15 @@ namespace MauiApp1.Services
                         return;
                     }
                 }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    SafeCloseSocket();                   // session ending — leave nothing half-open
+                    throw;
+                }
                 catch (Exception ex)
                 {
                     last = ex;
+                    SafeCloseSocket();                   // release the failed/stuck socket immediately
                     Debug.WriteLine($"[OBD] Connect attempt {attempt} failed: {ex.Message}");
                 }
             }
@@ -274,157 +289,121 @@ namespace MauiApp1.Services
 
         public Task StartMonitoring()
         {
-            // Supersede any previous loop so two routes can never poll the same socket.
-            int generation = ++_monitorGeneration;
-            _isRunning = true;
-            var task = Task.Run(() => MonitorLoopAsync(generation));
+            // Defensive: tear down any previous session so a route always starts from a clean slate.
+            _sessionCts?.Cancel();
+            _sessionCts?.Dispose();
+            _sessionCts = new CancellationTokenSource();
+
+            // Reset the per-session telemetry cache.
+            _cycle = 0;
+            _throttle = _load = _intakeTemp = _maf = _mapVal = 0;
+            _fuelPressure = _o2voltage = _lambda = _catalystTemp = _fuelLevel = 0;
+
+            // The manager owns the poll/reconnect loop and GUARANTEES the socket is closed exactly
+            // once when the session ends — even if Finish races a reconnect. That single teardown
+            // guarantee is what stops the open-socket leak from accumulating across routes and
+            // eventually wedging the adapter ("Socket not available"). See ObdConnectionManager
+            // and its unit tests in WebApplication1.Tests/ObdConnectionManagerTests.cs.
+            _manager = new ObdConnectionManager(
+                reconnectAsync: ct => ConnectInternalAsync(ct),
+                pollOnceAsync: PollOnceAsync,
+                closeTransport: SafeCloseSocket,
+                policy: new ReconnectPolicy(),
+                pollDelayMs: 500);
+
+            var token = _sessionCts.Token;
+            var task = Task.Run(() => _manager.RunAsync(token));
             _monitorTask = task;
             return task;
         }
 
-        private async Task MonitorLoopAsync(int generation)
+        // One telemetry poll cycle, driven by ObdConnectionManager. Returns true when a valid frame
+        // was read and published. A transport failure bubbles up as ObdConnectionException (from
+        // QueryParameter) so the manager counts it and reconnects; the slow-PID cache lives in fields
+        // so values persist between cycles.
+        private async Task<bool> PollOnceAsync(CancellationToken ct)
         {
-            var policy = new ReconnectPolicy();
-            int cycle = 0;
+            ct.ThrowIfCancellationRequested();
 
-            // Cached slow-cycle values
-            double throttle = 0, load = 0, intakeTemp = 0, maf = 0, mapVal = 0;
-            double fuelPressure = 0, o2voltage = 0, lambda = 0, catalystTemp = 0, fuelLevel = 0;
-            double rpm = 0, speed = 0, temp = 0;
-
-            while (_isRunning && generation == _monitorGeneration)
+            // RPM is read every cycle and doubles as the connection-health probe:
+            // a valid 41 0C frame means the link AND the vehicle bus are alive.
+            var rpmRaw = await QueryParameter("010C");
+            bool valid = ObdProtocol.TryParseTwoByteValue(rpmRaw, 0x0C, 4.0, out double rpm);
+            if (!valid)
             {
-                bool valid = false;
-                try
-                {
-                    // RPM is read every cycle and doubles as the connection-health probe:
-                    // a valid 41 0C frame means the link AND the vehicle bus are alive.
-                    var rpmRaw = await QueryParameter("010C");
-                    valid = ObdProtocol.TryParseTwoByteValue(rpmRaw, 0x0C, 4.0, out rpm);
-
-                    if (valid)
-                    {
-                        speed = ObdProtocol.ParseOneByteValue(await QueryParameter("010D"), 0x0D);
-                        temp = ObdProtocol.ParseOneByteOffset(await QueryParameter("0105"), 0x05, -40);
-
-                        // Slow PIDs — every 5th cycle (~10s)
-                        if (cycle % 5 == 0)
-                        {
-                            throttle = ObdProtocol.ParseOneBytePercent(await QueryParameter("0111"), 0x11);
-                            load = ObdProtocol.ParseOneBytePercent(await QueryParameter("0104"), 0x04);
-                            intakeTemp = ObdProtocol.ParseOneByteOffset(await QueryParameter("010F"), 0x0F, -40);
-                            maf = ObdProtocol.ParseTwoByteValue(await QueryParameter("0110"), 0x10, 100.0);
-                            mapVal = ObdProtocol.ParseOneByteValue(await QueryParameter("010B"), 0x0B);
-                            fuelLevel = ObdProtocol.ParseOneBytePercent(await QueryParameter("012F"), 0x2F);
-                        }
-
-                        // Very slow PIDs — every 15th cycle (~30s)
-                        if (cycle % 15 == 0)
-                        {
-                            fuelPressure = ObdProtocol.ParseTwoByteRaw(await QueryParameter("0123"), 0x23, 0.079);
-                            o2voltage = ObdProtocol.ParseO2Voltage(await QueryParameter("0114"));
-                            lambda = ObdProtocol.ParseLambda(await QueryParameter("0124"));
-                            catalystTemp = ObdProtocol.ParseCatalystTemp(await QueryParameter("013C"));
-                            _cachedBatteryVoltage = await ReadBatteryVoltage() ?? _cachedBatteryVoltage;
-                        }
-
-                        cycle++;
-
-                        CurrentRpm = rpm;
-                        CurrentSpeed = speed;
-                        CurrentTemperature = temp;
-                        LastUpdate = DateTime.Now;
-
-                        try
-                        {
-                            // Only attach coordinates once GPS has produced a real fix. Until then
-                            // LastLatitude/LastLongitude are still 0,0; persisting and drawing that
-                            // would put a bogus point in the Gulf of Guinea and distort the route.
-                            bool hasGpsFix = LastLatitude != 0 && LastLongitude != 0;
-                            var carData = new CarDataDto
-                            {
-                                RouteId = CurrentRouteId,
-                                RPM = rpm.ToString("F0"),
-                                Speed = speed.ToString("F0"),
-                                EngineCoolantTemperature = temp.ToString("F0"),
-                                ThrottlePosition = throttle.ToString("F1"),
-                                EngineLoad = load.ToString("F1"),
-                                IntakeAirTemperature = intakeTemp.ToString("F0"),
-                                MAF = maf.ToString("F2"),
-                                MAP = mapVal.ToString("F0"),
-                                FuelRailPressure = fuelPressure.ToString("F0"),
-                                O2SensorVoltage = o2voltage.ToString("F3"),
-                                LambdaValue = lambda.ToString("F3"),
-                                CatalystTemperature = catalystTemp.ToString("F0"),
-                                FuelLevel = fuelLevel.ToString("F1"),
-                                FuelType = _cachedFuelType,
-                                BatteryVoltage = _cachedBatteryVoltage,
-                                VIN = _cachedVin,
-                                Latitude = hasGpsFix ? LastLatitude.ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
-                                Longitude = hasGpsFix ? LastLongitude.ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
-                                Timestamp = DateTime.UtcNow
-                            };
-                            await _rabbitMqService.PublishAsync(carData, "obd-data");
-                        }
-                        catch (Exception pubEx)
-                        {
-                            Debug.WriteLine($"Error publishing OBD data: {pubEx.Message}");
-                        }
-
-                        Debug.WriteLine($"OBD - RPM:{rpm:F0} Spd:{speed:F0} Tmp:{temp:F0} Thr:{throttle:F1}% Load:{load:F1}%");
-                    }
-                    else
-                    {
-                        Debug.WriteLine($"[OBD] No valid frame (raw='{rpmRaw?.Trim()}')");
-                    }
-                }
-                catch (ObdConnectionException ex)
-                {
-                    valid = false;
-                    Debug.WriteLine($"[OBD] Connection error: {ex.Message}");
-                }
-                catch (Exception ex)
-                {
-                    valid = false;
-                    Debug.WriteLine($"[OBD] Read error: {ex.Message}");
-                }
-
-                if (valid)
-                {
-                    policy.RecordSuccess();
-                    await Task.Delay(500); // normal polling cadence
-                    continue;
-                }
-
-                // Invalid read or transport error. Count it and, once the threshold is reached,
-                // fully reconnect with a capped backoff. This is what makes telemetry resume
-                // after the engine stops and restarts (start-stop) and recovers dropped sockets.
-                policy.RecordFailure();
-                if (policy.ShouldReconnect)
-                {
-                    var backoff = policy.NextBackoff();
-                    Debug.WriteLine($"[OBD] Telemetry lost, reconnecting in {backoff.TotalSeconds:F0}s (attempt {policy.ReconnectAttempts})");
-                    await Task.Delay(backoff);
-                    if (!_isRunning || generation != _monitorGeneration) break;
-
-                    try
-                    {
-                        await ConnectInternalAsync();
-                        policy.RecordSuccess();
-                        Debug.WriteLine("[OBD] Reconnected — telemetry resumed");
-                    }
-                    catch (Exception rex)
-                    {
-                        Debug.WriteLine($"[OBD] Reconnect failed: {rex.Message}");
-                    }
-                }
-                else
-                {
-                    await Task.Delay(500);
-                }
+                Debug.WriteLine($"[OBD] No valid frame (raw='{rpmRaw?.Trim()}')");
+                return false;
             }
 
-            Debug.WriteLine($"[OBD] Monitor loop {generation} exited");
+            double speed = ObdProtocol.ParseOneByteValue(await QueryParameter("010D"), 0x0D);
+            double temp = ObdProtocol.ParseOneByteOffset(await QueryParameter("0105"), 0x05, -40);
+
+            // Slow PIDs — every 5th cycle (~10s)
+            if (_cycle % 5 == 0)
+            {
+                _throttle = ObdProtocol.ParseOneBytePercent(await QueryParameter("0111"), 0x11);
+                _load = ObdProtocol.ParseOneBytePercent(await QueryParameter("0104"), 0x04);
+                _intakeTemp = ObdProtocol.ParseOneByteOffset(await QueryParameter("010F"), 0x0F, -40);
+                _maf = ObdProtocol.ParseTwoByteValue(await QueryParameter("0110"), 0x10, 100.0);
+                _mapVal = ObdProtocol.ParseOneByteValue(await QueryParameter("010B"), 0x0B);
+                _fuelLevel = ObdProtocol.ParseOneBytePercent(await QueryParameter("012F"), 0x2F);
+            }
+
+            // Very slow PIDs — every 15th cycle (~30s)
+            if (_cycle % 15 == 0)
+            {
+                _fuelPressure = ObdProtocol.ParseTwoByteRaw(await QueryParameter("0123"), 0x23, 0.079);
+                _o2voltage = ObdProtocol.ParseO2Voltage(await QueryParameter("0114"));
+                _lambda = ObdProtocol.ParseLambda(await QueryParameter("0124"));
+                _catalystTemp = ObdProtocol.ParseCatalystTemp(await QueryParameter("013C"));
+                _cachedBatteryVoltage = await ReadBatteryVoltage() ?? _cachedBatteryVoltage;
+            }
+
+            _cycle++;
+
+            CurrentRpm = rpm;
+            CurrentSpeed = speed;
+            CurrentTemperature = temp;
+            LastUpdate = DateTime.Now;
+
+            try
+            {
+                // Only attach coordinates once GPS has produced a real fix. Until then
+                // LastLatitude/LastLongitude are still 0,0; persisting and drawing that
+                // would put a bogus point in the Gulf of Guinea and distort the route.
+                bool hasGpsFix = LastLatitude != 0 && LastLongitude != 0;
+                var carData = new CarDataDto
+                {
+                    RouteId = CurrentRouteId,
+                    RPM = rpm.ToString("F0"),
+                    Speed = speed.ToString("F0"),
+                    EngineCoolantTemperature = temp.ToString("F0"),
+                    ThrottlePosition = _throttle.ToString("F1"),
+                    EngineLoad = _load.ToString("F1"),
+                    IntakeAirTemperature = _intakeTemp.ToString("F0"),
+                    MAF = _maf.ToString("F2"),
+                    MAP = _mapVal.ToString("F0"),
+                    FuelRailPressure = _fuelPressure.ToString("F0"),
+                    O2SensorVoltage = _o2voltage.ToString("F3"),
+                    LambdaValue = _lambda.ToString("F3"),
+                    CatalystTemperature = _catalystTemp.ToString("F0"),
+                    FuelLevel = _fuelLevel.ToString("F1"),
+                    FuelType = _cachedFuelType,
+                    BatteryVoltage = _cachedBatteryVoltage,
+                    VIN = _cachedVin,
+                    Latitude = hasGpsFix ? LastLatitude.ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
+                    Longitude = hasGpsFix ? LastLongitude.ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
+                    Timestamp = DateTime.UtcNow
+                };
+                await _rabbitMqService.PublishAsync(carData, "obd-data");
+            }
+            catch (Exception pubEx)
+            {
+                Debug.WriteLine($"Error publishing OBD data: {pubEx.Message}");
+            }
+
+            Debug.WriteLine($"OBD - RPM:{rpm:F0} Spd:{speed:F0} Tmp:{temp:F0} Thr:{_throttle:F1}% Load:{_load:F1}%");
+            return true;
         }
 
         private async Task<Location?> GetCurrentLocation()
@@ -477,11 +456,31 @@ namespace MauiApp1.Services
             }
         }
 
-        public void StopMonitoring()
+        public async Task StopMonitoring()
         {
-            _isRunning = false;
-            _monitorGeneration++;   // invalidate the running loop so it cannot resurrect
-            SafeCloseSocket();       // unblock any in-flight read
+            // 1) Tell the loop to stop and unblock any in-flight blocking read so it returns promptly.
+            _sessionCts?.Cancel();
+            SafeCloseSocket();
+
+            // 2) Wait for the loop to actually finish. The manager's finally then closes the socket
+            //    exactly once, so the next route starts from a guaranteed-clean state.
+            var task = _monitorTask;
+            if (task != null)
+            {
+                try { await task.WaitAsync(TimeSpan.FromSeconds(5)); }
+                catch (Exception ex) { Debug.WriteLine($"[OBD] Stop wait: {ex.Message}"); }
+            }
+
+            // 3) Belt-and-suspenders close + reset cached telemetry/session state.
+            SafeCloseSocket();
+            _monitorTask = null;
+            _manager = null;
+            _sessionCts?.Dispose();
+            _sessionCts = null;
+
+            CurrentRpm = 0;
+            CurrentSpeed = 0;
+            CurrentTemperature = 0;
         }
 
         private async Task<string> SendObdCommand(string command, int timeoutMs = 2000)
