@@ -20,6 +20,9 @@ public partial class RoutesPage : ContentPage
     CancellationTokenSource? _gpsCts;
     bool _mqErrorShown = false;
     int _gpsSuccessCount = 0;
+    // Guards against overlapping location reads: a single fix can take up to a few seconds, so
+    // without this the 500 ms timer would stack concurrent reads that all resolve at once.
+    volatile bool _gpsReadInFlight;
 
     public ObservableCollection<RouteDto> Routes => _routes;
 
@@ -118,30 +121,51 @@ public partial class RoutesPage : ContentPage
     {
         _gpsCts?.Cancel();
         _gpsCts = new CancellationTokenSource();
+        var token = _gpsCts.Token;
+        _gpsReadInFlight = false;
 
         Dispatcher.StartTimer(TimeSpan.FromMilliseconds(500), () =>
         {
-            if (/*_gpsCts.IsCancellationRequested ||*/ _currentRoute is null)
+            if (token.IsCancellationRequested || _currentRoute is null)
                 return false;                            // stop timer
 
-            _ = LogPointAsync();
+            // Re-entrancy guard: skip this tick if the previous location read is still running.
+            // Geolocation.GetLocationAsync can block for up to its timeout; without this guard the
+            // backed-up reads all complete together and publish a burst of identical-coordinate
+            // points (the duplicate rows seen in car_datas). One read at a time keeps one point
+            // per real fix and makes the published stream deterministic.
+            if (_gpsReadInFlight)
+                return true;                             // try again on the next tick
+
+            _ = LogPointAsync(token);
             return true;                               // repeat
         });
     }
 
-    async Task LogPointAsync()
+    async Task LogPointAsync(CancellationToken token)
     {
+        _gpsReadInFlight = true;
         try
         {
+            // Capture the route up front so a Finish that nulls _currentRoute mid-read cannot throw.
+            var route = _currentRoute;
+            if (route is null)
+                return;
+
             var loc = await Geolocation.GetLocationAsync(
-                new GeolocationRequest(GeolocationAccuracy.Medium, TimeSpan.FromSeconds(3)));
+                new GeolocationRequest(GeolocationAccuracy.Medium, TimeSpan.FromSeconds(3)), token);
             if (loc == null)
             {
                 Debug.WriteLine("[GPS] GetLocationAsync returned null");
                 return;
             }
 
-            _currentRoute!.Points.Add(new GpsLogEntry
+            // The route may have finished while we were waiting for the fix; if so, drop this point
+            // instead of publishing telemetry for a route that is no longer running.
+            if (token.IsCancellationRequested || _currentRoute is null)
+                return;
+
+            route.Points.Add(new GpsLogEntry
             {
                 Timestamp = DateTime.UtcNow,
                 Latitude = loc.Latitude,
@@ -156,7 +180,7 @@ public partial class RoutesPage : ContentPage
 
             var entry = new RouteGpsLogEntry
             {
-                RouteId = _currentRoute.Id,
+                RouteId = route.Id,
                 Timestamp = DateTime.UtcNow,
                 Latitude = loc.Latitude,
                 Longitude = loc.Longitude
@@ -167,6 +191,10 @@ public partial class RoutesPage : ContentPage
             _gpsSuccessCount++;
             Debug.WriteLine($"[GPS] Published #{_gpsSuccessCount}: {loc.Latitude}, {loc.Longitude}");
         }
+        catch (OperationCanceledException)
+        {
+            // Route finished while a fix was in flight — expected, nothing to report.
+        }
         catch (Exception ex)
         {
             Debug.WriteLine($"[GPS] Error: {ex.Message}");
@@ -176,6 +204,10 @@ public partial class RoutesPage : ContentPage
                 MainThread.BeginInvokeOnMainThread(async () =>
                     await DisplayAlert("GPS/MQ Error", ex.Message, "OK"));
             }
+        }
+        finally
+        {
+            _gpsReadInFlight = false;
         }
     }
 

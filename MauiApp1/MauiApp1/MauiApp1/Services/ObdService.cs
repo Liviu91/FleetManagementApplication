@@ -337,6 +337,10 @@ namespace MauiApp1.Services
 
                         try
                         {
+                            // Only attach coordinates once GPS has produced a real fix. Until then
+                            // LastLatitude/LastLongitude are still 0,0; persisting and drawing that
+                            // would put a bogus point in the Gulf of Guinea and distort the route.
+                            bool hasGpsFix = LastLatitude != 0 && LastLongitude != 0;
                             var carData = new CarDataDto
                             {
                                 RouteId = CurrentRouteId,
@@ -356,8 +360,8 @@ namespace MauiApp1.Services
                                 FuelType = _cachedFuelType,
                                 BatteryVoltage = _cachedBatteryVoltage,
                                 VIN = _cachedVin,
-                                Latitude = LastLatitude.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                                Longitude = LastLongitude.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                                Latitude = hasGpsFix ? LastLatitude.ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
+                                Longitude = hasGpsFix ? LastLongitude.ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
                                 Timestamp = DateTime.UtcNow
                             };
                             await _rabbitMqService.PublishAsync(carData, "obd-data");
