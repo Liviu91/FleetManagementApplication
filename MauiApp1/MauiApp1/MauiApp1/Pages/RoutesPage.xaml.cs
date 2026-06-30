@@ -38,6 +38,7 @@ public partial class RoutesPage : ContentPage
         _mq = mq;
 #if ANDROID
         _obdService = obdService;
+        LocationForegroundService.LocationLogged += OnForegroundLocationLogged;
 #endif
     }
 
@@ -107,9 +108,10 @@ public partial class RoutesPage : ContentPage
         _gpsCts = null!;
         _currentRoute = null!;
 
-        // Stop OBD monitoring
+        // Stop GPS + OBD monitoring
 #if ANDROID
-        _obdService.StopMonitoring();
+        LocationForegroundService.Stop();
+        await _obdService.StopMonitoring();
 #endif
 
         var id = (int)((Button)sender).CommandParameter;
@@ -119,6 +121,12 @@ public partial class RoutesPage : ContentPage
 
     void StartGpsLogging()
     {
+#if ANDROID
+        // Drive GPS from a foreground service + wake lock so logging continues when the screen is
+        // off or the device is idle. The UI-thread Dispatcher timer (non-Android path below) is
+        // throttled/suspended by Doze and would silently stop logging once the phone sleeps.
+        LocationForegroundService.Start(_currentRoute!.Id);
+#else
         _gpsCts?.Cancel();
         _gpsCts = new CancellationTokenSource();
         var token = _gpsCts.Token;
@@ -140,7 +148,30 @@ public partial class RoutesPage : ContentPage
             _ = LogPointAsync(token);
             return true;                               // repeat
         });
+#endif
     }
+
+#if ANDROID
+    // The foreground GPS service publishes each fix to RabbitMQ on a background thread; mirror the
+    // point into the in-memory route on the UI thread so the on-device live map keeps updating.
+    void OnForegroundLocationLogged(int routeId, double lat, double lng)
+    {
+        MainThread.BeginInvokeOnMainThread(() =>
+        {
+            var route = _currentRoute;
+            if (route is null || route.Id != routeId)
+                return;
+
+            route.Points.Add(new GpsLogEntry
+            {
+                Timestamp = DateTime.UtcNow,
+                Latitude = lat,
+                Longitude = lng
+            });
+            _gpsSuccessCount++;
+        });
+    }
+#endif
 
     async Task LogPointAsync(CancellationToken token)
     {

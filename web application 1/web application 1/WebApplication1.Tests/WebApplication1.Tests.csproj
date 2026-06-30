@@ -23,4 +23,11 @@
     <ProjectReference Include="..\WebApplication1\WebApplication1.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Link the platform-agnostic OBD logic from the MAUI app so its resilience and
+         socket-teardown behaviour can be unit-tested here without the Android workload. -->
+    <Compile Include="..\..\..\MauiApp1\MauiApp1\MauiApp1\Services\ObdProtocol.cs" Link="Obd\ObdProtocol.cs" />
+    <Compile Include="..\..\..\MauiApp1\MauiApp1\MauiApp1\Services\ObdConnectionManager.cs" Link="Obd\ObdConnectionManager.cs" />
+  </ItemGroup>
+
 </Project>
