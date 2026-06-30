@@ -38,6 +38,12 @@ namespace MauiApp1.Services
         private CancellationTokenSource? _sessionCts;
         private ObdConnectionManager? _manager;
 
+        // Serializes the public connect/teardown lifecycle so a fast Finish->Start (or a double Start)
+        // can never run two connect loops over the same _socket at once. The captured diagnostics
+        // showed exactly that race: route 18's 4-attempt connect was still looping when route 19's
+        // Start began, and the two clobbered each other's socket and _routeCorr.
+        private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
+
         // Per-session telemetry cache (slow PIDs persist between poll cycles)
         private int _cycle;
         private double _throttle, _load, _intakeTemp, _maf, _mapVal;
@@ -63,9 +69,24 @@ namespace MauiApp1.Services
 
         public async Task Connect(string deviceName = "OBDII")
         {
-            _preferredDeviceName = deviceName;
-            _routeCorr = ObdDiagnostics.NewCorrelationId();   // groups this route's OBD activity in the log
-            await ConnectInternalAsync();
+            // Promptly signal any previous in-flight session to abort so it releases the gate quickly,
+            // then serialize: only ONE connect/teardown runs at a time. This removes the connect race
+            // seen in the diagnostics (two ConnectInternalAsync loops fighting over _socket/_routeCorr).
+            CancelCurrentSession();
+            await _lifecycleGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                await TeardownSessionAsync().ConfigureAwait(false);   // finish unwinding the previous session
+
+                _preferredDeviceName = deviceName;
+                _routeCorr = ObdDiagnostics.NewCorrelationId();   // groups this route's OBD activity in the log
+                _sessionCts = new CancellationTokenSource();
+                await ConnectInternalAsync(_sessionCts.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                _lifecycleGate.Release();
+            }
         }
 
         // Robust connect: resolve the paired adapter, cancel discovery, and retry a few times.
@@ -484,10 +505,10 @@ namespace MauiApp1.Services
 
         public Task StartMonitoring()
         {
-            // Defensive: tear down any previous session so a route always starts from a clean slate.
-            _sessionCts?.Cancel();
-            _sessionCts?.Dispose();
-            _sessionCts = new CancellationTokenSource();
+            // Reuse the session CTS established by Connect so the connect, the poll/reconnect loop and
+            // teardown all share ONE cancellation scope. (The old code recreated it here, which orphaned
+            // the just-established connection and is why a Finish during connect could not cancel it.)
+            _sessionCts ??= new CancellationTokenSource();
 
             // Reset the per-session telemetry cache.
             _cycle = 0;
@@ -529,15 +550,20 @@ namespace MauiApp1.Services
             if (!valid)
             {
                 Debug.WriteLine($"[OBD] No valid frame (raw='{rpmRaw?.Trim()}')");
-                _diag.PollFailure(_routeCorr, new
+                // Skip logging when we're tearing down: StopMonitoring closes the socket to unblock the
+                // in-flight read, which surfaces here as an expected failure (not a real fault).
+                if (_sessionCts?.IsCancellationRequested != true)
                 {
-                    reason = "no-valid-rpm-frame",
-                    command = "010C",
-                    raw = ObdDiagnostics.San(rpmRaw),
-                    reconnect_count = _manager?.ReconnectCount,
-                    consecutive_poll_failures = _manager?.ConsecutivePollFailures,
-                    manager_last_error = _manager?.LastError
-                });
+                    _diag.PollFailure(_routeCorr, new
+                    {
+                        reason = "no-valid-rpm-frame",
+                        command = "010C",
+                        raw = ObdDiagnostics.San(rpmRaw),
+                        reconnect_count = _manager?.ReconnectCount,
+                        consecutive_poll_failures = _manager?.ConsecutivePollFailures,
+                        manager_last_error = _manager?.LastError
+                    });
+                }
                 return false;
             }
 
@@ -653,12 +679,17 @@ namespace MauiApp1.Services
             }
             catch (ObdConnectionException ex)
             {
-                _diag.PollFailure(_routeCorr, new
+                // Don't log the expected read failure that occurs when StopMonitoring closes the socket
+                // to unblock the in-flight read during teardown (avoids spurious poll_fail-after-stop).
+                if (_sessionCts?.IsCancellationRequested != true)
                 {
-                    reason = "transport-exception",
-                    command,
-                    error = ObdDiagnostics.DescribeException(ex)
-                });
+                    _diag.PollFailure(_routeCorr, new
+                    {
+                        reason = "transport-exception",
+                        command,
+                        error = ObdDiagnostics.DescribeException(ex)
+                    });
+                }
                 throw;   // transport down -> bubble up so the monitor loop reconnects
             }
             catch (Exception ex)
@@ -668,42 +699,68 @@ namespace MauiApp1.Services
             }
         }
 
-        public async Task StopMonitoring()
+        // Signals the current session (in-flight connect AND/OR the poll loop) to abort, and unblocks
+        // any in-flight blocking read/connect by closing the socket. Safe to call when nothing runs.
+        private void CancelCurrentSession()
         {
-            _diag.MonitorNote("monitor_stop", _routeCorr, new
-            {
-                route_id = CurrentRouteId,
-                reconnect_count = _manager?.ReconnectCount,
-                consecutive_poll_failures = _manager?.ConsecutivePollFailures,
-                manager_last_error = _manager?.LastError
-            });
-
-            // 1) Tell the loop to stop and unblock any in-flight blocking read so it returns promptly.
-            _sessionCts?.Cancel();
+            var cts = _sessionCts;
+            try { cts?.Cancel(); } catch { /* already disposed */ }
             SafeCloseSocket();
+        }
 
-            // 2) Wait for the loop to actually finish. The manager's finally then closes the socket
-            //    exactly once, so the next route starts from a guaranteed-clean state.
+        // Waits for the monitor loop (if any) to unwind after cancellation, then disposes the session
+        // and resets the transport/manager state so the next connect starts from a clean slate.
+        private async Task TeardownSessionAsync()
+        {
             var task = _monitorTask;
             if (task != null)
             {
-                try { await task.WaitAsync(TimeSpan.FromSeconds(5)); }
-                catch (Exception ex) { Debug.WriteLine($"[OBD] Stop wait: {ex.Message}"); }
+                try { await task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
+                catch (Exception ex) { Debug.WriteLine($"[OBD] Teardown wait: {ex.Message}"); }
             }
 
-            // 3) Belt-and-suspenders close + reset cached telemetry/session state.
             SafeCloseSocket();
             _monitorTask = null;
             _manager = null;
             _sessionCts?.Dispose();
             _sessionCts = null;
+        }
 
-            CurrentRpm = 0;
-            CurrentSpeed = 0;
-            CurrentTemperature = 0;
+        public async Task StopMonitoring()
+        {
+            // Cancel FIRST (outside the gate) so an in-flight connect/poll aborts immediately and the
+            // lifecycle gate is released promptly; then serialize the actual teardown.
+            CancelCurrentSession();
 
-            _lastStopUtc = DateTime.UtcNow;   // inter-route timing anchor for the next connect episode
-            _routeCorr = null;
+            await _lifecycleGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                // Nothing to stop -> skip the bookkeeping. This collapses the burst of redundant Finish
+                // taps the diagnostics showed (5x monitor_stop for a single route).
+                if (_monitorTask == null && _manager == null && _routeCorr == null)
+                    return;
+
+                _diag.MonitorNote("monitor_stop", _routeCorr, new
+                {
+                    route_id = CurrentRouteId,
+                    reconnect_count = _manager?.ReconnectCount,
+                    consecutive_poll_failures = _manager?.ConsecutivePollFailures,
+                    manager_last_error = _manager?.LastError
+                });
+
+                await TeardownSessionAsync().ConfigureAwait(false);
+
+                CurrentRpm = 0;
+                CurrentSpeed = 0;
+                CurrentTemperature = 0;
+
+                _lastStopUtc = DateTime.UtcNow;   // inter-route timing anchor for the next connect episode
+                _routeCorr = null;
+            }
+            finally
+            {
+                _lifecycleGate.Release();
+            }
         }
 
         private async Task<string> SendObdCommand(string command, int timeoutMs = 2000)

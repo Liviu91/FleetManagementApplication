@@ -26,6 +26,10 @@ public partial class RoutesPage : ContentPage
     // Guards against overlapping location reads: a single fix can take up to a few seconds, so
     // without this the 500 ms timer would stack concurrent reads that all resolve at once.
     volatile bool _gpsReadInFlight;
+    // Guards Start/Finish against double-taps and overlap. The captured diagnostics showed a single
+    // Finish tapped 5x (5 redundant monitor_stop + status updates) and a Start fired while a previous
+    // connect was still looping. This flag covers the short bookkeeping section of each handler.
+    bool _routeOpInProgress;
 
     public ObservableCollection<RouteDto> Routes => _routes;
 
@@ -65,27 +69,42 @@ public partial class RoutesPage : ContentPage
 
     async void OnStartClicked(object sender, EventArgs e)
     {
-        var id = (int)((Button)sender).CommandParameter;
-        if (!await EnsureBluetoothAndLocationPermissions())
+        if (_routeOpInProgress) return;          // ignore double-taps / overlapping route operations
+        _routeOpInProgress = true;
+        try
         {
-            await DisplayAlert("Permission Required",
-                "Location and Bluetooth permissions are required to start the route.", "OK");
-            return;
-        }
-        await _routeService.UpdateRouteStatusAsync(id, "Started");
+            var id = (int)((Button)sender).CommandParameter;
+            if (!await EnsureBluetoothAndLocationPermissions())
+            {
+                await DisplayAlert("Permission Required",
+                    "Location and Bluetooth permissions are required to start the route.", "OK");
+                return;
+            }
+            await _routeService.UpdateRouteStatusAsync(id, "Started");
 
-        await LoadRoutesAsync();                              // rebuild list
-        _currentRoute = _routes.First(r => r.Id == id);       // <- new object
+            await LoadRoutesAsync();                              // rebuild list
+            _currentRoute = _routes.First(r => r.Id == id);       // <- new object
 
-        _mqErrorShown = false;
-        _gpsSuccessCount = 0;
+            _mqErrorShown = false;
+            _gpsSuccessCount = 0;
 
-        StartGpsLogging();
+            StartGpsLogging();
 
-        // Start OBD monitoring on separate queue
 #if ANDROID
-        _obdService.CurrentRouteId = _currentRoute.Id;
-        await StartObdAsync();
+            _obdService.CurrentRouteId = _currentRoute.Id;
+#endif
+        }
+        finally
+        {
+            _routeOpInProgress = false;
+        }
+
+        // Connect/monitor runs OUTSIDE the UI guard: the dongle handshake can take 20s+, and we must
+        // let the driver press Finish meanwhile (which cancels this connect). ObdService serializes its
+        // own connect/teardown, so starting it here is race-safe.
+#if ANDROID
+        if (_currentRoute != null)
+            await StartObdAsync();
 #endif
     }
 
@@ -95,32 +114,55 @@ public partial class RoutesPage : ContentPage
         try
         {
             await _obdService.Connect();
-            await DisplayAlert("OBD Connected", $"Connected to OBD device. Live telemetry active.", "OK");
+            await DisplayAlert("OBD Connected", "Connected to OBD device. Live telemetry active.", "OK");
             _ = _obdService.StartMonitoring();
+        }
+        catch (OperationCanceledException)
+        {
+            // The route was finished (or a new route started) while the connect was still retrying.
+            // Expected — no alert; the session was already cancelled/torn down.
+            Debug.WriteLine("[OBD] Connect cancelled (route finished/superseded).");
         }
         catch (Exception ex)
         {
             Debug.WriteLine($"[OBD] Error: {ex.Message}");
-            await DisplayAlert("OBD Warning", $"OBD not available: {ex.Message}\nGPS tracking will continue without telemetry.", "OK");
+            // The phone reached the dongle over Bluetooth but its RFCOMM channel is wedged (classic
+            // ELM327-clone firmware lock-up). Only a power-cycle of the dongle reliably clears it, so
+            // guide the driver instead of showing a raw exception string.
+            await DisplayAlert("OBD not available",
+                "Couldn't reach the car's OBD adapter.\n\n" +
+                "\u2022 Unplug the OBD dongle, wait ~5 seconds, plug it back in, then press Start again.\n" +
+                "\u2022 If it still fails, toggle the phone's Bluetooth off and on.\n\n" +
+                "GPS tracking will continue without engine telemetry.",
+                "OK");
         }
     }
 #endif
 
     async void OnFinishClicked(object sender, EventArgs e)
     {
-        _gpsCts?.Cancel();
-        _gpsCts = null!;
-        _currentRoute = null!;
+        if (_routeOpInProgress) return;          // ignore double-taps (the logs showed Finish hit 5x)
+        _routeOpInProgress = true;
+        try
+        {
+            _gpsCts?.Cancel();
+            _gpsCts = null!;
+            _currentRoute = null!;
 
-        // Stop GPS + OBD monitoring
+            // Stop GPS + OBD monitoring
 #if ANDROID
-        LocationForegroundService.Stop();
-        await _obdService.StopMonitoring();
+            LocationForegroundService.Stop();
+            await _obdService.StopMonitoring();
 #endif
 
-        var id = (int)((Button)sender).CommandParameter;
-        if (await _routeService.UpdateRouteStatusAsync(id, "Finished"))
-            await LoadRoutesAsync();
+            var id = (int)((Button)sender).CommandParameter;
+            if (await _routeService.UpdateRouteStatusAsync(id, "Finished"))
+                await LoadRoutesAsync();
+        }
+        finally
+        {
+            _routeOpInProgress = false;
+        }
     }
 
     // Flushes the on-device OBD diagnostics file and hands it to the OS share sheet so it can be
