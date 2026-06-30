@@ -128,7 +128,7 @@ namespace MauiApp1
                         Debug.WriteLine("[GPS-FGS] GetLocationAsync returned null");
                     }
                 }
-                catch (OperationCanceledException)
+                catch (System.OperationCanceledException)
                 {
                     break;
                 }
@@ -138,7 +138,7 @@ namespace MauiApp1
                 }
 
                 try { await Task.Delay(PollIntervalMs, ct); }
-                catch (OperationCanceledException) { break; }
+                catch (System.OperationCanceledException) { break; }
             }
         }
 
@@ -207,7 +207,7 @@ namespace MauiApp1
             return new NotificationCompat.Builder(this, ChannelId)
                 .SetContentTitle("Route in progress")
                 .SetContentText("Logging GPS location\u2026")
-                .SetSmallIcon(Android.Resource.Drawable.IcMenuMylocation)
+                .SetSmallIcon(global::Android.Resource.Drawable.IcDialogInfo)
                 .SetOngoing(true)
                 .SetPriority((int)NotificationPriority.Low)
                 .Build();
