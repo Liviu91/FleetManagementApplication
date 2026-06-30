@@ -41,6 +41,12 @@ namespace MauiApp1
         /// <summary>The route currently being tracked (used by the background loop and the UI filter).</summary>
         public static int CurrentRouteId { get; private set; }
 
+        /// <summary>True while the foreground tracking service is running. Diagnostics hint only.</summary>
+        public static bool IsRunning { get; private set; }
+
+        /// <summary>True while the partial wake lock is held. Diagnostics hint only.</summary>
+        public static bool WakeLockHeld { get; private set; }
+
         public static void Start(int routeId)
         {
             CurrentRouteId = routeId;
@@ -77,6 +83,9 @@ namespace MauiApp1
             CreateNotificationChannel();
             StartForeground(NotificationId, BuildNotification());
             AcquireWakeLock();
+            IsRunning = true;
+            IPlatformApplication.Current?.Services?.GetService<ObdDiagnostics>()?
+                .MonitorNote("fgs_start", data: new { route = CurrentRouteId });
 
             _loopCts?.Cancel();
             _loopCts = new CancellationTokenSource();
@@ -144,6 +153,9 @@ namespace MauiApp1
 
         void StopTracking()
         {
+            IPlatformApplication.Current?.Services?.GetService<ObdDiagnostics>()?
+                .MonitorNote("fgs_stop", data: new { route = CurrentRouteId });
+            IsRunning = false;
             _loopCts?.Cancel();
             _loopCts = null;
             ReleaseWakeLock();
@@ -169,6 +181,7 @@ namespace MauiApp1
                 var pm = (PowerManager?)GetSystemService(PowerService);
                 _wakeLock = pm?.NewWakeLock(WakeLockFlags.Partial, "MauiApp1:RouteTrackingWakeLock");
                 _wakeLock?.Acquire();
+                WakeLockHeld = _wakeLock?.IsHeld ?? false;
             }
             catch (Exception ex)
             {
@@ -183,6 +196,7 @@ namespace MauiApp1
                 if (_wakeLock?.IsHeld == true)
                     _wakeLock.Release();
                 _wakeLock = null;
+                WakeLockHeld = false;
             }
             catch (Exception ex)
             {

@@ -1,8 +1,10 @@
 using MauiApp1.Model;
 using MauiApp1.Services;
 using Microsoft.Maui.ApplicationModel.Communication;
+using Microsoft.Maui.ApplicationModel.DataTransfer;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.IO;
 using System.Timers;
 
 namespace MauiApp1.Pages;
@@ -12,6 +14,7 @@ public partial class RoutesPage : ContentPage
     readonly RouteService _routeService;
     readonly ObservableCollection<RouteDto> _routes = new();
     readonly RabbitMqService _mq;
+    readonly ObdDiagnostics _diag;
 #if ANDROID
     readonly ObdService _obdService;
 #endif
@@ -27,15 +30,16 @@ public partial class RoutesPage : ContentPage
     public ObservableCollection<RouteDto> Routes => _routes;
 
 #if ANDROID
-    public RoutesPage(RouteService routeService, RabbitMqService mq, ObdService obdService)
+    public RoutesPage(RouteService routeService, RabbitMqService mq, ObdService obdService, ObdDiagnostics diagnostics)
 #else
-    public RoutesPage(RouteService routeService, RabbitMqService mq)
+    public RoutesPage(RouteService routeService, RabbitMqService mq, ObdDiagnostics diagnostics)
 #endif
 	{
 		InitializeComponent();
         _routeService = routeService;
         BindingContext = this;
         _mq = mq;
+        _diag = diagnostics;
 #if ANDROID
         _obdService = obdService;
         LocationForegroundService.LocationLogged += OnForegroundLocationLogged;
@@ -117,6 +121,35 @@ public partial class RoutesPage : ContentPage
         var id = (int)((Button)sender).CommandParameter;
         if (await _routeService.UpdateRouteStatusAsync(id, "Finished"))
             await LoadRoutesAsync();
+    }
+
+    // Flushes the on-device OBD diagnostics file and hands it to the OS share sheet so it can be
+    // emailed / saved / sent off the phone after a test session. Works on all platforms; on non-Android
+    // the file simply contains the session_start line.
+    async void OnExportObdLogsClicked(object sender, EventArgs e)
+    {
+        try
+        {
+            var size = await _diag.FlushAsync();
+            _diag.LogExport(size);
+
+            if (size <= 0 || !File.Exists(_diag.FilePath))
+            {
+                await DisplayAlert("OBD Logs", "No diagnostics have been captured yet.", "OK");
+                return;
+            }
+
+            await Share.RequestAsync(new ShareFileRequest
+            {
+                Title = "OBD diagnostics",
+                File = new ShareFile(_diag.FilePath)
+            });
+        }
+        catch (Exception ex)
+        {
+            await DisplayAlert("Export failed",
+                $"{ex.Message}\n\nFile on device:\n{_diag.FilePath}", "OK");
+        }
     }
 
     void StartGpsLogging()

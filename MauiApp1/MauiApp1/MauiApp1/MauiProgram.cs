@@ -99,6 +99,7 @@ namespace MauiApp1
             builder.Services.AddSingleton<AuthService>();
             builder.Services.AddSingleton<RouteService>();
             builder.Services.AddSingleton<RabbitMqService>();
+            builder.Services.AddSingleton<ObdDiagnostics>();   // on-device OBD diagnostic recorder
 #if ANDROID
             builder.Services.AddSingleton<ObdService>();
 #endif

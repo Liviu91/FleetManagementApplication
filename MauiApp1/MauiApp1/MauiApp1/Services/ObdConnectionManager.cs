@@ -46,6 +46,12 @@ namespace MauiApp1.Services
         public int ReconnectCount { get; private set; }
 
         /// <summary>
+        /// Current consecutive poll-failure count from the reconnect policy. Read-only passthrough
+        /// exposed purely for diagnostics — does not affect the loop's behaviour.
+        /// </summary>
+        public int ConsecutivePollFailures => _policy.ConsecutiveFailures;
+
+        /// <summary>
         /// Runs the poll/reconnect loop until <paramref name="ct"/> is cancelled. The transport
         /// is always closed exactly once before the returned task completes, even if cancellation
         /// lands while a reconnect is in flight.

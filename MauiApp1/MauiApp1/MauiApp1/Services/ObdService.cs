@@ -25,6 +25,12 @@ namespace MauiApp1.Services
         private string? _cachedFuelType;
         private string? _cachedBatteryVoltage;
 
+        // Diagnostics (observability only — never alters connect/reconnect behaviour).
+        private readonly ObdDiagnostics _diag;
+        private string? _routeCorr;             // correlation id shared across one route's OBD activity
+        private DateTime? _lastConnectOkUtc;    // last successful connect (inter-route timing)
+        private DateTime? _lastStopUtc;         // last StopMonitoring (inter-route timing)
+
         // Connection / loop resilience state
         private const int ConnectTimeoutMs = 8000;     // hard cap so a wedged adapter can't block a connect forever
         private string _preferredDeviceName = "OBDII";
@@ -46,9 +52,10 @@ namespace MauiApp1.Services
         public double LastLatitude { get; set; }
         public double LastLongitude { get; set; }
 
-        public ObdService(RabbitMqService rabbitMqService)
+        public ObdService(RabbitMqService rabbitMqService, ObdDiagnostics diagnostics)
         {
             _rabbitMqService = rabbitMqService;
+            _diag = diagnostics;
 #pragma warning disable CS0618 // Type or member is obsolete
             _bluetoothAdapter = BluetoothAdapter.DefaultAdapter;
 #pragma warning restore CS0618 // Type or member is obsolete
@@ -57,6 +64,7 @@ namespace MauiApp1.Services
         public async Task Connect(string deviceName = "OBDII")
         {
             _preferredDeviceName = deviceName;
+            _routeCorr = ObdDiagnostics.NewCorrelationId();   // groups this route's OBD activity in the log
             await ConnectInternalAsync();
         }
 
@@ -64,62 +72,166 @@ namespace MauiApp1.Services
         // Later attempts use the reflection createRfcommSocket(1) fallback — the well-known
         // workaround for ELM327 clones that fail the secure-UUID socket with
         // "read failed, socket might closed or timeout, read ret: -1".
-        private async Task ConnectInternalAsync(CancellationToken ct = default, int maxAttempts = 4)
+        private async Task ConnectInternalAsync(CancellationToken ct = default, int maxAttempts = 4,
+                                                string trigger = "initial-connect")
         {
-            if (_bluetoothAdapter == null)
-                throw new ObdConnectionException("No Bluetooth adapter found");
-            if (!_bluetoothAdapter.IsEnabled)
-                throw new ObdConnectionException("Bluetooth is not enabled");
+            // --- Diagnostics: open an episode and snapshot the PRE-connect context. Observability only;
+            //     none of the calls below change the connect/retry/fallback behaviour.
+            string episodeCorr = ObdDiagnostics.NewCorrelationId();
+            var episodeSw = Stopwatch.StartNew();
+            bool priorSocketNonNull = _socket != null;            // catches a socket leaked from a prior route
+            bool priorSocketConnected = false;
+            try { priorSocketConnected = _socket?.IsConnected == true; } catch { }
+            var nowUtc = DateTime.UtcNow;
 
-            ResolveDevice(_preferredDeviceName);
-
-            // Discovery is heavyweight and breaks RFCOMM connects — always stop it first.
-            if (_bluetoothAdapter.IsDiscovering)
-                _bluetoothAdapter.CancelDiscovery();
-
-            Exception? last = null;
-            for (int attempt = 1; attempt <= maxAttempts; attempt++)
+            _diag.BeginConnectEpisode(episodeCorr, _routeCorr, trigger, CurrentRouteId, new
             {
-                ct.ThrowIfCancellationRequested();       // route ended — abandon the connect, no orphan socket
-                SafeCloseSocket();                       // never reuse a half-open socket
-                await Task.Delay(attempt == 1 ? 200 : 600, ct);
+                prior_socket_non_null = priorSocketNonNull,
+                prior_socket_connected = priorSocketConnected,
+                secs_since_last_connect_ok = _lastConnectOkUtc.HasValue
+                    ? (double?)(nowUtc - _lastConnectOkUtc.Value).TotalSeconds : null,
+                secs_since_last_stop = _lastStopUtc.HasValue
+                    ? (double?)(nowUtc - _lastStopUtc.Value).TotalSeconds : null,
+                max_attempts = maxAttempts,
+                adapter = SnapshotAdapterState(),
+                lifecycle = SnapshotLifecycle()
+            });
 
-                try
+            string outcome = "FAILURE";
+            string summary = "";
+            try
+            {
+                if (_bluetoothAdapter == null)
+                    throw new ObdConnectionException("No Bluetooth adapter found");
+                if (!_bluetoothAdapter.IsEnabled)
+                    throw new ObdConnectionException("Bluetooth is not enabled");
+
+                ResolveDevice(_preferredDeviceName);
+
+                // Discovery is heavyweight and breaks RFCOMM connects — always stop it first.
+                if (_bluetoothAdapter.IsDiscovering)
+                    _bluetoothAdapter.CancelDiscovery();
+
+                Exception? last = null;
+                for (int attempt = 1; attempt <= maxAttempts; attempt++)
                 {
-                    if (_bluetoothAdapter.IsDiscovering)
-                        _bluetoothAdapter.CancelDiscovery();
+                    ct.ThrowIfCancellationRequested();       // route ended — abandon the connect, no orphan socket
+                    SafeCloseSocket();                       // never reuse a half-open socket
+                    await Task.Delay(attempt == 1 ? 200 : 600, ct);
 
-                    _socket = attempt < 3
-                        ? _device!.CreateRfcommSocketToServiceRecord(SppUuid)   // preferred
-                        : CreateReflectionSocket(_device!);                     // fallback
-
-                    // Hard timeout: a wedged clone can otherwise block ConnectAsync indefinitely,
-                    // which is what produced the "Bluetooth blinks several times then hangs" symptom.
-                    await _socket!.ConnectAsync().WaitAsync(TimeSpan.FromMilliseconds(ConnectTimeoutMs), ct);
-
-                    if (_socket.IsConnected)
+                    string socketType = attempt < 3 ? "secure-uuid" : "reflection";
+                    string phase = "connect";
+                    var attemptSw = Stopwatch.StartNew();
+                    try
                     {
-                        Debug.WriteLine($"[OBD] Connected to {_device!.Name} on attempt {attempt}");
-                        await InitializeElmAsync();
-                        return;
+                        if (_bluetoothAdapter.IsDiscovering)
+                            _bluetoothAdapter.CancelDiscovery();
+
+                        _socket = attempt < 3
+                            ? _device!.CreateRfcommSocketToServiceRecord(SppUuid)   // preferred
+                            : CreateReflectionSocket(_device!);                     // fallback
+
+                        // Hard timeout: a wedged clone can otherwise block ConnectAsync indefinitely,
+                        // which is what produced the "Bluetooth blinks several times then hangs" symptom.
+                        await _socket!.ConnectAsync().WaitAsync(TimeSpan.FromMilliseconds(ConnectTimeoutMs), ct);
+
+                        if (_socket.IsConnected)
+                        {
+                            Debug.WriteLine($"[OBD] Connected to {_device!.Name} on attempt {attempt}");
+                            _diag.LogAttempt(episodeCorr, _routeCorr, new
+                            {
+                                attempt,
+                                socket_type = socketType,
+                                phase = "connect",
+                                result = "connected",
+                                duration_ms = attemptSw.ElapsedMilliseconds
+                            });
+
+                            phase = "initialize";
+                            await InitializeElmAsync(episodeCorr);
+
+                            _diag.LogAttempt(episodeCorr, _routeCorr, new
+                            {
+                                attempt,
+                                socket_type = socketType,
+                                phase = "initialize",
+                                result = "success",
+                                duration_ms = attemptSw.ElapsedMilliseconds
+                            });
+
+                            outcome = "SUCCESS";
+                            _lastConnectOkUtc = DateTime.UtcNow;
+                            return;
+                        }
+
+                        // ConnectAsync returned but the socket reports not-connected — log the oddity.
+                        _diag.LogAttempt(episodeCorr, _routeCorr, new
+                        {
+                            attempt,
+                            socket_type = socketType,
+                            phase = "connect",
+                            result = "not-connected",
+                            duration_ms = attemptSw.ElapsedMilliseconds
+                        });
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        _diag.LogAttempt(episodeCorr, _routeCorr, new
+                        {
+                            attempt,
+                            socket_type = socketType,
+                            phase,
+                            result = "cancelled",
+                            duration_ms = attemptSw.ElapsedMilliseconds
+                        });
+                        SafeCloseSocket();                   // session ending — leave nothing half-open
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        last = ex;
+                        _diag.LogAttempt(episodeCorr, _routeCorr, new
+                        {
+                            attempt,
+                            socket_type = socketType,
+                            phase,                            // "connect" or "initialize" — where it died
+                            result = ex is TimeoutException ? "timeout" : "exception",
+                            duration_ms = attemptSw.ElapsedMilliseconds,
+                            error = ObdDiagnostics.DescribeException(ex)
+                        });
+                        SafeCloseSocket();                   // release the failed/stuck socket immediately
+                        Debug.WriteLine($"[OBD] Connect attempt {attempt} failed: {ex.Message}");
                     }
                 }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested)
-                {
-                    SafeCloseSocket();                   // session ending — leave nothing half-open
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    last = ex;
-                    SafeCloseSocket();                   // release the failed/stuck socket immediately
-                    Debug.WriteLine($"[OBD] Connect attempt {attempt} failed: {ex.Message}");
-                }
-            }
 
-            SafeCloseSocket();
-            throw new ObdConnectionException(
-                $"Failed to connect to OBD after {maxAttempts} attempts: {last?.Message}");
+                SafeCloseSocket();
+                throw new ObdConnectionException(
+                    $"Failed to connect to OBD after {maxAttempts} attempts: {last?.Message}");
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                outcome = "CANCELLED";
+                summary = "connect cancelled (route ended)";
+                throw;
+            }
+            catch (Exception ex)
+            {
+                summary = ex.Message;
+                throw;
+            }
+            finally
+            {
+                _diag.EndConnectEpisode(episodeCorr, _routeCorr, outcome, new
+                {
+                    trigger,
+                    summary,
+                    total_ms = episodeSw.ElapsedMilliseconds,
+                    reconnect_count = _manager?.ReconnectCount,
+                    consecutive_poll_failures = _manager?.ConsecutivePollFailures,
+                    manager_last_error = _manager?.LastError,
+                    adapter_after = SnapshotAdapterState()
+                });
+            }
         }
 
         private void ResolveDevice(string deviceName)
@@ -152,24 +264,107 @@ namespace MauiApp1.Services
             return (BluetoothSocket)socket!;
         }
 
-        private async Task InitializeElmAsync()
+        // Plain-value snapshot of the adapter / bonding / target-device state for diagnostics. Never throws.
+        private object SnapshotAdapterState()
         {
-            await Task.Delay(500);              // let the adapter settle
-            await SendObdCommand("ATZ");        // reset
-            await Task.Delay(1000);
-            await SendObdCommand("ATE0");       // echo off
-            await Task.Delay(100);
-            await SendObdCommand("ATL0");       // linefeeds off
-            await Task.Delay(100);
-            await SendObdCommand("ATSP0");      // auto protocol — re-establishes the bus after an engine restart
-            await Task.Delay(100);
-            Debug.WriteLine("[OBD] ELM327 initialized");
+            try
+            {
+                var bonded = new List<string>();
+                try
+                {
+                    var devices = _bluetoothAdapter?.BondedDevices;
+                    if (devices != null)
+                        foreach (var d in devices)
+                            bonded.Add($"{d.Name}|{d.Address}|{d.BondState}");
+                }
+                catch { /* bonded list unavailable — leave empty */ }
 
-            // Static values — refresh on (re)connect but keep the previous value if a read fails.
-            _cachedVin = await ReadVin() ?? _cachedVin;
-            _cachedFuelType = await ReadFuelType() ?? _cachedFuelType;
-            _cachedBatteryVoltage = await ReadBatteryVoltage() ?? _cachedBatteryVoltage;
-            Debug.WriteLine($"[OBD] VIN:{_cachedVin} Fuel:{_cachedFuelType} Batt:{_cachedBatteryVoltage}");
+                return new
+                {
+                    adapter_present = _bluetoothAdapter != null,
+                    enabled = _bluetoothAdapter?.IsEnabled,
+                    discovering = _bluetoothAdapter?.IsDiscovering,
+                    state = _bluetoothAdapter?.State.ToString(),
+                    device_name = _device?.Name,
+                    device_address = _device?.Address,
+                    device_bond_state = _device?.BondState.ToString(),
+                    bonded_count = bonded.Count,
+                    bonded
+                };
+            }
+            catch (Exception ex)
+            {
+                return new { snapshot_error = ex.Message };
+            }
+        }
+
+        // Cheap app-lifecycle hints relevant to the wedged-adapter failure (foreground service + wake lock).
+        private static object SnapshotLifecycle()
+        {
+            try
+            {
+                return new
+                {
+                    fg_service_running = global::MauiApp1.LocationForegroundService.IsRunning,
+                    wake_lock_held = global::MauiApp1.LocationForegroundService.WakeLockHeld,
+                    fg_service_route = global::MauiApp1.LocationForegroundService.CurrentRouteId
+                };
+            }
+            catch (Exception ex)
+            {
+                return new { lifecycle_error = ex.Message };
+            }
+        }
+
+        private async Task InitializeElmAsync(string? corr = null)
+        {
+            // Capture the raw ELM handshake so an init-time failure (vs a connect-time failure) is
+            // distinguishable from the exported log. Behaviour is unchanged: on any error we still throw.
+            string? atz = null, ate0 = null, atl0 = null, atsp0 = null;
+            try
+            {
+                await Task.Delay(500);              // let the adapter settle
+                atz = await SendObdCommand("ATZ");  // reset
+                await Task.Delay(1000);
+                ate0 = await SendObdCommand("ATE0");// echo off
+                await Task.Delay(100);
+                atl0 = await SendObdCommand("ATL0");// linefeeds off
+                await Task.Delay(100);
+                atsp0 = await SendObdCommand("ATSP0");// auto protocol — re-establishes the bus after an engine restart
+                await Task.Delay(100);
+                Debug.WriteLine("[OBD] ELM327 initialized");
+
+                // Static values — refresh on (re)connect but keep the previous value if a read fails.
+                _cachedVin = await ReadVin() ?? _cachedVin;
+                _cachedFuelType = await ReadFuelType() ?? _cachedFuelType;
+                _cachedBatteryVoltage = await ReadBatteryVoltage() ?? _cachedBatteryVoltage;
+                Debug.WriteLine($"[OBD] VIN:{_cachedVin} Fuel:{_cachedFuelType} Batt:{_cachedBatteryVoltage}");
+
+                _diag.LogInit(corr ?? _routeCorr ?? "?", _routeCorr, "SUCCESS", new
+                {
+                    atz = ObdDiagnostics.San(atz),
+                    ate0 = ObdDiagnostics.San(ate0),
+                    atl0 = ObdDiagnostics.San(atl0),
+                    atsp0 = ObdDiagnostics.San(atsp0),
+                    vin = _cachedVin,
+                    fuel_type = _cachedFuelType,
+                    battery_voltage = _cachedBatteryVoltage
+                });
+            }
+            catch (Exception ex)
+            {
+                _diag.LogInit(corr ?? _routeCorr ?? "?", _routeCorr, "FAILURE", new
+                {
+                    atz = ObdDiagnostics.San(atz),
+                    ate0 = ObdDiagnostics.San(ate0),
+                    atl0 = ObdDiagnostics.San(atl0),
+                    atsp0 = ObdDiagnostics.San(atsp0),
+                    vin = _cachedVin,
+                    battery_voltage = _cachedBatteryVoltage,
+                    error = ObdDiagnostics.DescribeException(ex)
+                });
+                throw;
+            }
         }
 
         private void SafeCloseSocket()
@@ -305,11 +500,13 @@ namespace MauiApp1.Services
             // eventually wedging the adapter ("Socket not available"). See ObdConnectionManager
             // and its unit tests in WebApplication1.Tests/ObdConnectionManagerTests.cs.
             _manager = new ObdConnectionManager(
-                reconnectAsync: ct => ConnectInternalAsync(ct),
+                reconnectAsync: ct => ConnectInternalAsync(ct, trigger: "reconnect"),
                 pollOnceAsync: PollOnceAsync,
                 closeTransport: SafeCloseSocket,
                 policy: new ReconnectPolicy(),
                 pollDelayMs: 500);
+
+            _diag.MonitorNote("monitor_start", _routeCorr, new { route_id = CurrentRouteId });
 
             var token = _sessionCts.Token;
             var task = Task.Run(() => _manager.RunAsync(token));
@@ -332,6 +529,15 @@ namespace MauiApp1.Services
             if (!valid)
             {
                 Debug.WriteLine($"[OBD] No valid frame (raw='{rpmRaw?.Trim()}')");
+                _diag.PollFailure(_routeCorr, new
+                {
+                    reason = "no-valid-rpm-frame",
+                    command = "010C",
+                    raw = ObdDiagnostics.San(rpmRaw),
+                    reconnect_count = _manager?.ReconnectCount,
+                    consecutive_poll_failures = _manager?.ConsecutivePollFailures,
+                    manager_last_error = _manager?.LastError
+                });
                 return false;
             }
 
@@ -445,8 +651,14 @@ namespace MauiApp1.Services
             {
                 return await SendObdCommand(command);
             }
-            catch (ObdConnectionException)
+            catch (ObdConnectionException ex)
             {
+                _diag.PollFailure(_routeCorr, new
+                {
+                    reason = "transport-exception",
+                    command,
+                    error = ObdDiagnostics.DescribeException(ex)
+                });
                 throw;   // transport down -> bubble up so the monitor loop reconnects
             }
             catch (Exception ex)
@@ -458,6 +670,14 @@ namespace MauiApp1.Services
 
         public async Task StopMonitoring()
         {
+            _diag.MonitorNote("monitor_stop", _routeCorr, new
+            {
+                route_id = CurrentRouteId,
+                reconnect_count = _manager?.ReconnectCount,
+                consecutive_poll_failures = _manager?.ConsecutivePollFailures,
+                manager_last_error = _manager?.LastError
+            });
+
             // 1) Tell the loop to stop and unblock any in-flight blocking read so it returns promptly.
             _sessionCts?.Cancel();
             SafeCloseSocket();
@@ -481,6 +701,9 @@ namespace MauiApp1.Services
             CurrentRpm = 0;
             CurrentSpeed = 0;
             CurrentTemperature = 0;
+
+            _lastStopUtc = DateTime.UtcNow;   // inter-route timing anchor for the next connect episode
+            _routeCorr = null;
         }
 
         private async Task<string> SendObdCommand(string command, int timeoutMs = 2000)
@@ -523,13 +746,13 @@ namespace MauiApp1.Services
 
                     if ((DateTime.Now - startTime).TotalMilliseconds > timeoutMs)
                     {
-                        Debug.WriteLine($"[OBD] Timeout reading response for command: {command}");
+                        _diag.Trace("CMD", $"TIMEOUT reading response for: {command}");
                         break;
                     }
                 }
 
                 var result = responseBuilder.ToString();
-                Debug.WriteLine($"CMD: {command} -> {result.Replace("\r", "\\r").Replace("\n", "\\n")}");
+                _diag.Trace("CMD", $"{command} -> {ObdDiagnostics.San(result)}");
                 return result;
             }
             catch (ObdConnectionException)
