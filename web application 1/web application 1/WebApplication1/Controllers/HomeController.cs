@@ -261,7 +261,7 @@ namespace Project.Controllers
                 EndDate = null,
                 End = route.End,
                 Start = route.Start,
-                Timestamp = DateTime.UtcNow,
+                Timestamp = DateTime.Now,
                 Status = WebApplication1.Enums.Status.Assigned
             };
             await _routeRepository.AddAsync(entry);
@@ -341,7 +341,7 @@ namespace Project.Controllers
                     // GetRouteGpsData can use it as an exact session boundary instead of
                     // relying on a gap heuristic that breaks when routes are restarted quickly.
                     if (parsedStatus == WebApplication1.Enums.Status.Started)
-                        route.StartDate = DateTime.UtcNow;
+                        route.StartDate = DateTime.Now;
                     await _routeRepository.UpdateAsync(route);
                     return Ok();
                 }
@@ -423,10 +423,12 @@ namespace Project.Controllers
                 //  2. the feed itself is still producing data right now (catches a full device
                 //     disconnect where no GPS or OBD rows arrive at all). Without (2) the last
                 //     frozen reading would be reported as live indefinitely.
-                var nowUtc = DateTime.UtcNow;
+                // Telemetry is timestamped with the device's local wall-clock (DateTime.Now), so the
+                // "is the feed still alive" comparison must use the server's local clock too.
+                var now = DateTime.Now;
                 bool obdLive = latestObd != null && latestData != null
-                    && (AsUtc(latestData.Timestamp) - AsUtc(latestObd.Timestamp)).TotalSeconds <= ObdStaleSeconds
-                    && (nowUtc - AsUtc(latestData.Timestamp)).TotalSeconds <= FeedStaleSeconds;
+                    && (latestData.Timestamp - latestObd.Timestamp).TotalSeconds <= ObdStaleSeconds
+                    && (now - latestData.Timestamp).TotalSeconds <= FeedStaleSeconds;
                 var obd = obdLive ? latestObd : null;
 
                 var driver = users.FirstOrDefault(u => u.Id == route.UserId);
@@ -450,7 +452,7 @@ namespace Project.Controllers
                     o2SensorVoltage = obd?.O2SensorVoltage,
                     lambdaValue = obd?.LambdaValue,
                     catalystTemperature = obd?.CatalystTemperature,
-                    lastUpdate = AsUtc(latestData?.Timestamp ?? route.StartDate)
+                    lastUpdate = latestData?.Timestamp ?? route.StartDate
                 });
             }
 
@@ -541,9 +543,10 @@ namespace Project.Controllers
 
             // Incremental polling: return only points strictly newer than 'since'. This is
             // robust because it is based on real timestamps, not fragile list indices that
-            // shift as the deduplicated set grows. 'since' is normalized to UTC so the value
-            // the browser echoes back (from the UTC timestamp we serialized) compares correctly
-            // no matter what local time zone the server runs in.
+            // shift as the deduplicated set grows. Both 'since' and each stored timestamp are
+            // normalized the same way (AsUtc) purely so the comparison is self-consistent no
+            // matter what DateTimeKind the model binder assigns to the echoed value; the offset
+            // cancels on both sides, so the filter works whether values are stored local or UTC.
             var sinceUtc = since.HasValue ? AsUtc(since.Value) : (DateTime?)null;
             var pointsToReturn = sinceUtc.HasValue
                 ? deduplicated.Where(cd => AsUtc(cd.Timestamp) > sinceUtc.Value).ToList()
@@ -569,18 +572,21 @@ namespace Project.Controllers
                     }
                 }
 
-                return new { lat = latitude, lng = longitude, timestamp = AsUtc(cd.Timestamp), rpm, speed };
+                // Emit the stored wall-clock time as-is (Kind=Unspecified => no 'Z'/offset in JSON),
+                // so the browser's new Date(...).toLocaleString() renders exactly the DB value. This
+                // matches the collapsed routes list, which also serializes the raw StartDate/EndDate.
+                return new { lat = latitude, lng = longitude, timestamp = cd.Timestamp, rpm, speed };
             }).ToList();
 
             return Ok(gpsPoints);
         }
 
-        // Normalize a DateTime read from the DB into an explicit UTC value. The MAUI app and the
-        // worker both timestamp data with DateTime.UtcNow, but SQL Server's datetime2 column does
-        // not preserve DateTimeKind, so EF returns the values as Kind=Unspecified. Serializing
-        // those without a zone designator (and re-parsing the ?since echo) is timezone-ambiguous
-        // and was a likely cause of the live map appearing frozen. Forcing UTC end-to-end makes
-        // the polling round-trip deterministic regardless of the server's local time zone.
+        // Normalize a DateTime read from the DB to a single explicit Kind so that timestamp
+        // COMPARISONS (session-gap detection and the ?since= polling filter) are self-consistent.
+        // SQL Server's datetime2 column does not preserve DateTimeKind, so EF returns values as
+        // Kind=Unspecified. This helper is used only for internal comparisons where it is applied
+        // to both operands (so any constant offset cancels); it is deliberately NOT used when
+        // serializing timestamps for display, which emit the raw stored wall-clock value.
         private static DateTime AsUtc(DateTime value) => value.Kind switch
         {
             DateTimeKind.Utc => value,

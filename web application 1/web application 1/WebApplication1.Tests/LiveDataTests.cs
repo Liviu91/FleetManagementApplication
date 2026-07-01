@@ -124,15 +124,19 @@ public class LiveDataTests
     }
 
     [Fact]
-    public async Task GetRouteGpsData_SerializesTimestampsAsUtc()
+    public async Task GetRouteGpsData_SerializesTimestampsAsWallClock()
     {
         var route = StartedRoute(Base);
         var controller = GpsController(route, new[] { Gps(0, 45.10, 25.10) });
 
         var ts = TimestampString(Points(await controller.GetRouteGpsData(RouteId))[0]);
 
-        // A 'Z' (or +00:00) suffix is what makes the ?since round-trip timezone-unambiguous.
-        Assert.EndsWith("Z", ts);
+        // Timestamps are serialized as the stored local wall-clock value (Kind=Unspecified => no
+        // 'Z'/offset), so the browser's new Date(...).toLocaleString() renders exactly the DB value
+        // and the expanded map matches the collapsed routes list. (A 'Z' suffix would make the
+        // browser add the local offset a second time — the reported +3h bug.)
+        Assert.DoesNotContain("Z", ts);
+        Assert.Equal(Base, ParseRoundtrip(ts));
     }
 
     [Fact]
@@ -295,7 +299,7 @@ public class LiveDataTests
     [Fact]
     public async Task GetActiveVehicles_FreshObd_ReportsValues()
     {
-        var now = DateTime.UtcNow;
+        var now = DateTime.Now;
         var route = StartedRoute(now.AddMinutes(-5));
         var data = new[]
         {
@@ -313,7 +317,7 @@ public class LiveDataTests
     public async Task GetActiveVehicles_ObdStoppedButGpsLive_ReportsNullObd()
     {
         // OBD reader dropped out 30s ago, but GPS keeps streaming -> OBD must read N/A, not stale.
-        var now = DateTime.UtcNow;
+        var now = DateTime.Now;
         var route = StartedRoute(now.AddMinutes(-5));
         var data = new[]
         {
@@ -332,7 +336,7 @@ public class LiveDataTests
     {
         // Device fully disconnected: no GPS or OBD for 30s. The previous heuristic kept showing
         // the last frozen reading forever; now it must read N/A because the feed is dead vs now.
-        var now = DateTime.UtcNow;
+        var now = DateTime.Now;
         var route = StartedRoute(now.AddMinutes(-5));
         var data = new[]
         {
@@ -349,7 +353,7 @@ public class LiveDataTests
     [Fact]
     public async Task GetActiveVehicles_NoStartedRoutes_ReturnsEmpty()
     {
-        var route = StartedRoute(DateTime.UtcNow);
+        var route = StartedRoute(DateTime.Now);
         route.Status = Status.Assigned; // not started
         var controller = ActiveVehiclesController(route, Array.Empty<CarData>());
 

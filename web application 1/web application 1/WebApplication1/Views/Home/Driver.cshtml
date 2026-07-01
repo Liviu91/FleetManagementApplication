@@ -51,7 +51,7 @@ else
             <td>@r.CarSerialNumber</td>
             <td>@r.Start</td>
             <td>@r.End</td>
-            <td>@r.StartDate:yyyy-MM-dd HH:mm</td>
+            <td>@r.StartDate.ToString("yyyy-MM-dd HH:mm")</td>
             <td>@(r.EndDate?.ToString("yyyy-MM-dd HH:mm") ?? "—")</td>
 
             <td>

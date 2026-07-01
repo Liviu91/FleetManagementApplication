@@ -32,6 +32,12 @@ namespace MauiApp1.Services
         private CancellationTokenSource? _sessionCts;
         private ObdConnectionManager? _manager;
 
+        // Serializes the public connect/teardown lifecycle so a fast Finish->Start (or a double Start)
+        // can never run two connect loops over the same _socket at once. Without it a route's 4-attempt
+        // connect could still be looping when the next route's Start began, and the two would clobber
+        // each other's socket.
+        private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
+
         // Per-session telemetry cache (slow PIDs persist between poll cycles)
         private int _cycle;
         private double _throttle, _load, _intakeTemp, _maf, _mapVal;
@@ -56,15 +62,31 @@ namespace MauiApp1.Services
 
         public async Task Connect(string deviceName = "OBDII")
         {
-            _preferredDeviceName = deviceName;
-            await ConnectInternalAsync();
+            // Promptly signal any previous in-flight session to abort so it releases the gate quickly,
+            // then serialize: only ONE connect/teardown runs at a time. This removes the connect race
+            // where two ConnectInternalAsync loops could fight over _socket.
+            CancelCurrentSession();
+            await _lifecycleGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                await TeardownSessionAsync().ConfigureAwait(false);   // finish unwinding the previous session
+
+                _preferredDeviceName = deviceName;
+                _sessionCts = new CancellationTokenSource();
+                await ConnectInternalAsync(_sessionCts.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                _lifecycleGate.Release();
+            }
         }
 
         // Robust connect: resolve the paired adapter, cancel discovery, and retry a few times.
         // Later attempts use the reflection createRfcommSocket(1) fallback — the well-known
         // workaround for ELM327 clones that fail the secure-UUID socket with
         // "read failed, socket might closed or timeout, read ret: -1".
-        private async Task ConnectInternalAsync(CancellationToken ct = default, int maxAttempts = 4)
+        private async Task ConnectInternalAsync(CancellationToken ct = default, int maxAttempts = 4,
+                                                string trigger = "initial-connect")
         {
             if (_bluetoothAdapter == null)
                 throw new ObdConnectionException("No Bluetooth adapter found");
@@ -289,10 +311,10 @@ namespace MauiApp1.Services
 
         public Task StartMonitoring()
         {
-            // Defensive: tear down any previous session so a route always starts from a clean slate.
-            _sessionCts?.Cancel();
-            _sessionCts?.Dispose();
-            _sessionCts = new CancellationTokenSource();
+            // Reuse the session CTS established by Connect so the connect, the poll/reconnect loop and
+            // teardown all share ONE cancellation scope. (The old code recreated it here, which orphaned
+            // the just-established connection and is why a Finish during connect could not cancel it.)
+            _sessionCts ??= new CancellationTokenSource();
 
             // Reset the per-session telemetry cache.
             _cycle = 0;
@@ -305,7 +327,7 @@ namespace MauiApp1.Services
             // eventually wedging the adapter ("Socket not available"). See ObdConnectionManager
             // and its unit tests in WebApplication1.Tests/ObdConnectionManagerTests.cs.
             _manager = new ObdConnectionManager(
-                reconnectAsync: ct => ConnectInternalAsync(ct),
+                reconnectAsync: ct => ConnectInternalAsync(ct, trigger: "reconnect"),
                 pollOnceAsync: PollOnceAsync,
                 closeTransport: SafeCloseSocket,
                 policy: new ReconnectPolicy(),
@@ -393,7 +415,7 @@ namespace MauiApp1.Services
                     VIN = _cachedVin,
                     Latitude = hasGpsFix ? LastLatitude.ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
                     Longitude = hasGpsFix ? LastLongitude.ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
-                    Timestamp = DateTime.UtcNow
+                    Timestamp = DateTime.Now
                 };
                 await _rabbitMqService.PublishAsync(carData, "obd-data");
             }
@@ -456,31 +478,57 @@ namespace MauiApp1.Services
             }
         }
 
-        public async Task StopMonitoring()
+        // Signals the current session (in-flight connect AND/OR the poll loop) to abort, and unblocks
+        // any in-flight blocking read/connect by closing the socket. Safe to call when nothing runs.
+        private void CancelCurrentSession()
         {
-            // 1) Tell the loop to stop and unblock any in-flight blocking read so it returns promptly.
-            _sessionCts?.Cancel();
+            var cts = _sessionCts;
+            try { cts?.Cancel(); } catch { /* already disposed */ }
             SafeCloseSocket();
+        }
 
-            // 2) Wait for the loop to actually finish. The manager's finally then closes the socket
-            //    exactly once, so the next route starts from a guaranteed-clean state.
+        // Waits for the monitor loop (if any) to unwind after cancellation, then disposes the session
+        // and resets the transport/manager state so the next connect starts from a clean slate.
+        private async Task TeardownSessionAsync()
+        {
             var task = _monitorTask;
             if (task != null)
             {
-                try { await task.WaitAsync(TimeSpan.FromSeconds(5)); }
-                catch (Exception ex) { Debug.WriteLine($"[OBD] Stop wait: {ex.Message}"); }
+                try { await task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
+                catch (Exception ex) { Debug.WriteLine($"[OBD] Teardown wait: {ex.Message}"); }
             }
 
-            // 3) Belt-and-suspenders close + reset cached telemetry/session state.
             SafeCloseSocket();
             _monitorTask = null;
             _manager = null;
             _sessionCts?.Dispose();
             _sessionCts = null;
+        }
 
-            CurrentRpm = 0;
-            CurrentSpeed = 0;
-            CurrentTemperature = 0;
+        public async Task StopMonitoring()
+        {
+            // Cancel FIRST (outside the gate) so an in-flight connect/poll aborts immediately and the
+            // lifecycle gate is released promptly; then serialize the actual teardown.
+            CancelCurrentSession();
+
+            await _lifecycleGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                // Nothing to stop -> skip the bookkeeping. This collapses the burst of redundant Finish
+                // taps into a single teardown.
+                if (_monitorTask == null && _manager == null && _sessionCts == null)
+                    return;
+
+                await TeardownSessionAsync().ConfigureAwait(false);
+
+                CurrentRpm = 0;
+                CurrentSpeed = 0;
+                CurrentTemperature = 0;
+            }
+            finally
+            {
+                _lifecycleGate.Release();
+            }
         }
 
         private async Task<string> SendObdCommand(string command, int timeoutMs = 2000)
@@ -522,15 +570,10 @@ namespace MauiApp1.Services
                     }
 
                     if ((DateTime.Now - startTime).TotalMilliseconds > timeoutMs)
-                    {
-                        Debug.WriteLine($"[OBD] Timeout reading response for command: {command}");
                         break;
-                    }
                 }
 
-                var result = responseBuilder.ToString();
-                Debug.WriteLine($"CMD: {command} -> {result.Replace("\r", "\\r").Replace("\n", "\\n")}");
-                return result;
+                return responseBuilder.ToString();
             }
             catch (ObdConnectionException)
             {
