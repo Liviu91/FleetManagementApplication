@@ -476,15 +476,23 @@ function showAddUserModal() {
             .then(vehicles => {
                 // Detect new/removed active routes and refresh routes table
                 var currentIds = vehicles.map(function(v) { return v.routeId; }).sort().join(',');
-                var previousIds = knownActiveRouteIds.sort().join(',');
+                var previousIds = knownActiveRouteIds.slice().sort().join(',');
                 if (currentIds !== previousIds) {
-                    knownActiveRouteIds = vehicles.map(function(v) { return v.routeId; });
-                    // Refresh routes table so new statuses appear and stale expanded rows are replaced.
-                    // BUT never rebuild while a route detail row is expanded: rebuilding destroys the
-                    // live Leaflet map and its polling timer, which made the live polyline appear to
-                    // "freeze". The status refresh can safely wait until the operator collapses the row.
+                    // A route just started or finished, so the routes table is now stale.
+                    routesRefreshPending = true;
+                }
+
+                // Refresh the routes table so new statuses/dates appear. BUT never rebuild while a
+                // route detail row is expanded: rebuilding destroys the live Leaflet map and its
+                // polling timer, which made the live polyline appear to "freeze". Defer instead, and
+                // crucially DO NOT advance knownActiveRouteIds until the refresh actually runs —
+                // otherwise the pending change is forgotten and the table stays stale forever (older
+                // routes remain visible). Retried every tick until the row is collapsed.
+                if (routesRefreshPending) {
                     var hasExpandedDetails = $('#routesTableBody .route-details-row:visible').length > 0;
                     if (typeof loadRoutes === 'function' && $('#routes').hasClass('active') && !hasExpandedDetails) {
+                        knownActiveRouteIds = vehicles.map(function(v) { return v.routeId; });
+                        routesRefreshPending = false;
                         loadRoutes();
                     }
                 }
@@ -539,6 +547,10 @@ function showAddUserModal() {
     var routePolylines = {};
     var routeTelemetryTimers = {};
     var knownActiveRouteIds = [];
+    // Set when a route's status changes but the table refresh had to be deferred (e.g. a detail row
+    // is expanded). Kept true and retried every tick until the refresh actually runs, so the table
+    // never gets stuck showing older routes.
+    var routesRefreshPending = false;
 
     // Load routes table
     function loadRoutes() {
