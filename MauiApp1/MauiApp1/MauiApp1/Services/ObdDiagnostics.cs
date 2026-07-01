@@ -43,11 +43,12 @@ namespace MauiApp1.Services
         private const int RingCapacity = 100;
         private const int MaxFieldLength = 800;
 
-        // One queue item is either a JSON line to append, or a flush request to satisfy.
+        // One queue item is either a JSON line to append, a flush request, or a reset request.
         private sealed class WriteItem
         {
             public string? Line;
             public TaskCompletionSource? Flush;
+            public TaskCompletionSource? Reset;
         }
 
         private readonly Channel<WriteItem> _channel =
@@ -60,7 +61,7 @@ namespace MauiApp1.Services
         private int _runCounter;
 
         /// <summary>Short id for this app process/run. Stamped on every line.</summary>
-        public string SessionId { get; }
+        public string SessionId { get; private set; }
 
         /// <summary>Absolute path of the JSONL diagnostics file on the device.</summary>
         public string FilePath { get; }
@@ -196,6 +197,54 @@ namespace MauiApp1.Services
             catch { return 0; }
         }
 
+        /// <summary>
+        /// Copies the current working log to a stable snapshot file (in the cache dir) and returns its
+        /// path, or null if there is nothing to export. The snapshot is a SEPARATE file, so it can be
+        /// shared safely even after <see cref="ResetAsync"/> truncates the working log.
+        /// </summary>
+        public async Task<string?> CreateExportSnapshotAsync()
+        {
+            await FlushAsync().ConfigureAwait(false);
+            try
+            {
+                if (!File.Exists(FilePath) || new FileInfo(FilePath).Length <= 0)
+                    return null;
+                var snapshot = Path.Combine(FileSystem.CacheDirectory, "obd_diagnostics_export.jsonl");
+                File.Copy(FilePath, snapshot, overwrite: true);
+                return snapshot;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[ObdDiagnostics] snapshot failed: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Starts a FRESH working log: truncates the file, resets the run counter and ring buffer, gives
+        /// the log a new session id, and writes a new session_start anchor. Used right after an export
+        /// so each exported file contains only the routes captured since the previous export.
+        /// </summary>
+        public async Task ResetAsync()
+        {
+            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _channel.Writer.TryWrite(new WriteItem { Reset = tcs });
+            try { await tcs.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
+            catch { /* best-effort */ }
+
+            Interlocked.Exchange(ref _runCounter, 0);
+            lock (_ringLock) { _ring.Clear(); }
+            SessionId = Guid.NewGuid().ToString("N").Substring(0, 8);
+
+            Event("session_start", data: new
+            {
+                app_session = SessionId,
+                file = FilePath,
+                note = "fresh log (previous log exported)",
+                local_offset = DateTimeOffset.Now.Offset.ToString()
+            });
+        }
+
         // ----------------------------------------------------------------------------------------
         // Static formatting helpers (shared by callers)
         // ----------------------------------------------------------------------------------------
@@ -276,11 +325,7 @@ namespace MauiApp1.Services
             StreamWriter? writer = null;
             try
             {
-                writer = new StreamWriter(
-                    new FileStream(FilePath, FileMode.Append, FileAccess.Write, FileShare.Read))
-                {
-                    AutoFlush = true
-                };
+                writer = OpenWriter();
 
                 await foreach (var item in _channel.Reader.ReadAllAsync().ConfigureAwait(false))
                 {
@@ -295,6 +340,19 @@ namespace MauiApp1.Services
                         try { await writer.FlushAsync().ConfigureAwait(false); } catch { }
                         item.Flush.TrySetResult();
                     }
+
+                    if (item.Reset != null)
+                    {
+                        try
+                        {
+                            await writer.FlushAsync().ConfigureAwait(false);
+                            writer.Dispose();
+                            File.WriteAllText(FilePath, string.Empty);   // truncate the working log
+                            writer = OpenWriter();
+                        }
+                        catch (Exception ex) { Debug.WriteLine($"[ObdDiagnostics] reset failed: {ex.Message}"); }
+                        item.Reset.TrySetResult();
+                    }
                 }
             }
             catch (Exception ex)
@@ -306,6 +364,12 @@ namespace MauiApp1.Services
                 try { writer?.Dispose(); } catch { }
             }
         }
+
+        private StreamWriter OpenWriter()
+            => new StreamWriter(new FileStream(FilePath, FileMode.Append, FileAccess.Write, FileShare.Read))
+            {
+                AutoFlush = true
+            };
 
         // ----------------------------------------------------------------------------------------
         // Small utilities

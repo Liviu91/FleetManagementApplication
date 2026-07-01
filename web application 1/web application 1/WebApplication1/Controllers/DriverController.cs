@@ -71,12 +71,12 @@ public class DriverController : ControllerBase
                 route.Status = parsedStatus;
                 if (parsedStatus == WebApplication1.Enums.Status.Started)
                 {
-                    route.StartDate = DateTime.UtcNow;
+                    route.StartDate = DateTime.Now;
                     route.EndDate = null;
                 }
                 if (parsedStatus == WebApplication1.Enums.Status.Finished)
                 {
-                    route.EndDate = DateTime.UtcNow;
+                    route.EndDate = DateTime.Now;
                 }
                 await _routeRepository.UpdateAsync(route);
                 return Ok();

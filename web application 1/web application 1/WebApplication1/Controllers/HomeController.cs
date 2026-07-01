@@ -261,7 +261,7 @@ namespace Project.Controllers
                 EndDate = null,
                 End = route.End,
                 Start = route.Start,
-                Timestamp = DateTime.UtcNow,
+                Timestamp = DateTime.Now,
                 Status = WebApplication1.Enums.Status.Assigned
             };
             await _routeRepository.AddAsync(entry);
@@ -341,7 +341,7 @@ namespace Project.Controllers
                     // GetRouteGpsData can use it as an exact session boundary instead of
                     // relying on a gap heuristic that breaks when routes are restarted quickly.
                     if (parsedStatus == WebApplication1.Enums.Status.Started)
-                        route.StartDate = DateTime.UtcNow;
+                        route.StartDate = DateTime.Now;
                     await _routeRepository.UpdateAsync(route);
                     return Ok();
                 }

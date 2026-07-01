@@ -625,7 +625,7 @@ namespace MauiApp1.Services
                     VIN = _cachedVin,
                     Latitude = hasGpsFix ? LastLatitude.ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
                     Longitude = hasGpsFix ? LastLongitude.ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
-                    Timestamp = DateTime.UtcNow
+                    Timestamp = DateTime.Now
                 };
                 await _rabbitMqService.PublishAsync(carData, "obd-data");
             }

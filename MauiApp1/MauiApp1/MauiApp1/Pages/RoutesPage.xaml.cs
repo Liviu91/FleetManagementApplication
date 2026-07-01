@@ -165,17 +165,15 @@ public partial class RoutesPage : ContentPage
         }
     }
 
-    // Flushes the on-device OBD diagnostics file and hands it to the OS share sheet so it can be
-    // emailed / saved / sent off the phone after a test session. Works on all platforms; on non-Android
-    // the file simply contains the session_start line.
+    // Flushes the on-device OBD diagnostics to a snapshot file, hands it to the OS share sheet, then
+    // starts a FRESH working log so the next export contains only newly-captured routes (no past
+    // results). Works on all platforms; on non-Android the file is essentially just session markers.
     async void OnExportObdLogsClicked(object sender, EventArgs e)
     {
         try
         {
-            var size = await _diag.FlushAsync();
-            _diag.LogExport(size);
-
-            if (size <= 0 || !File.Exists(_diag.FilePath))
+            var snapshot = await _diag.CreateExportSnapshotAsync();
+            if (snapshot == null)
             {
                 await DisplayAlert("OBD Logs", "No diagnostics have been captured yet.", "OK");
                 return;
@@ -184,8 +182,12 @@ public partial class RoutesPage : ContentPage
             await Share.RequestAsync(new ShareFileRequest
             {
                 Title = "OBD diagnostics",
-                File = new ShareFile(_diag.FilePath)
+                File = new ShareFile(snapshot)
             });
+
+            // Reset AFTER sharing the snapshot copy, so the shared file is untouched and the next
+            // export starts clean.
+            await _diag.ResetAsync();
         }
         catch (Exception ex)
         {
@@ -239,7 +241,7 @@ public partial class RoutesPage : ContentPage
 
             route.Points.Add(new GpsLogEntry
             {
-                Timestamp = DateTime.UtcNow,
+                Timestamp = DateTime.Now,
                 Latitude = lat,
                 Longitude = lng
             });
@@ -273,7 +275,7 @@ public partial class RoutesPage : ContentPage
 
             route.Points.Add(new GpsLogEntry
             {
-                Timestamp = DateTime.UtcNow,
+                Timestamp = DateTime.Now,
                 Latitude = loc.Latitude,
                 Longitude = loc.Longitude
             });
@@ -287,7 +289,7 @@ public partial class RoutesPage : ContentPage
             var entry = new RouteGpsLogEntry
             {
                 RouteId = route.Id,
-                Timestamp = DateTime.UtcNow,
+                Timestamp = DateTime.Now,
                 Latitude = loc.Latitude,
                 Longitude = loc.Longitude
             };
