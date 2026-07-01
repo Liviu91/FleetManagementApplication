@@ -99,8 +99,6 @@ namespace MauiApp1
             StartForeground(NotificationId, BuildNotification());
             AcquireWakeLock();
             IsRunning = true;
-            IPlatformApplication.Current?.Services?.GetService<ObdDiagnostics>()?
-                .MonitorNote("fgs_start", data: new { route = CurrentRouteId });
 
             _loopCts?.Cancel();
             _loopCts = new CancellationTokenSource();
@@ -223,8 +221,6 @@ namespace MauiApp1
 
         void StopTracking()
         {
-            IPlatformApplication.Current?.Services?.GetService<ObdDiagnostics>()?
-                .MonitorNote("fgs_stop", data: new { route = CurrentRouteId });
             IsRunning = false;
             try { _locationManager?.RemoveUpdates(this); } catch { }
             _locationManager = null;

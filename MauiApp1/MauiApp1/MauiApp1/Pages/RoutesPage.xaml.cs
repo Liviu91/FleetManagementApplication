@@ -1,10 +1,8 @@
 using MauiApp1.Model;
 using MauiApp1.Services;
 using Microsoft.Maui.ApplicationModel.Communication;
-using Microsoft.Maui.ApplicationModel.DataTransfer;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
-using System.IO;
 using System.Timers;
 
 namespace MauiApp1.Pages;
@@ -14,7 +12,6 @@ public partial class RoutesPage : ContentPage
     readonly RouteService _routeService;
     readonly ObservableCollection<RouteDto> _routes = new();
     readonly RabbitMqService _mq;
-    readonly ObdDiagnostics _diag;
 #if ANDROID
     readonly ObdService _obdService;
 #endif
@@ -26,24 +23,23 @@ public partial class RoutesPage : ContentPage
     // Guards against overlapping location reads: a single fix can take up to a few seconds, so
     // without this the 500 ms timer would stack concurrent reads that all resolve at once.
     volatile bool _gpsReadInFlight;
-    // Guards Start/Finish against double-taps and overlap. The captured diagnostics showed a single
-    // Finish tapped 5x (5 redundant monitor_stop + status updates) and a Start fired while a previous
-    // connect was still looping. This flag covers the short bookkeeping section of each handler.
+    // Guards Start/Finish against double-taps and overlap. A single Finish could be tapped several
+    // times (redundant monitor_stop + status updates) and a Start could fire while a previous connect
+    // was still looping. This flag covers the short bookkeeping section of each handler.
     bool _routeOpInProgress;
 
     public ObservableCollection<RouteDto> Routes => _routes;
 
 #if ANDROID
-    public RoutesPage(RouteService routeService, RabbitMqService mq, ObdService obdService, ObdDiagnostics diagnostics)
+    public RoutesPage(RouteService routeService, RabbitMqService mq, ObdService obdService)
 #else
-    public RoutesPage(RouteService routeService, RabbitMqService mq, ObdDiagnostics diagnostics)
+    public RoutesPage(RouteService routeService, RabbitMqService mq)
 #endif
 	{
 		InitializeComponent();
         _routeService = routeService;
         BindingContext = this;
         _mq = mq;
-        _diag = diagnostics;
 #if ANDROID
         _obdService = obdService;
         LocationForegroundService.LocationLogged += OnForegroundLocationLogged;
@@ -141,7 +137,7 @@ public partial class RoutesPage : ContentPage
 
     async void OnFinishClicked(object sender, EventArgs e)
     {
-        if (_routeOpInProgress) return;          // ignore double-taps (the logs showed Finish hit 5x)
+        if (_routeOpInProgress) return;          // ignore double-taps (Finish could be hit several times)
         _routeOpInProgress = true;
         try
         {
@@ -162,37 +158,6 @@ public partial class RoutesPage : ContentPage
         finally
         {
             _routeOpInProgress = false;
-        }
-    }
-
-    // Flushes the on-device OBD diagnostics to a snapshot file, hands it to the OS share sheet, then
-    // starts a FRESH working log so the next export contains only newly-captured routes (no past
-    // results). Works on all platforms; on non-Android the file is essentially just session markers.
-    async void OnExportObdLogsClicked(object sender, EventArgs e)
-    {
-        try
-        {
-            var snapshot = await _diag.CreateExportSnapshotAsync();
-            if (snapshot == null)
-            {
-                await DisplayAlert("OBD Logs", "No diagnostics have been captured yet.", "OK");
-                return;
-            }
-
-            await Share.RequestAsync(new ShareFileRequest
-            {
-                Title = "OBD diagnostics",
-                File = new ShareFile(snapshot)
-            });
-
-            // Reset AFTER sharing the snapshot copy, so the shared file is untouched and the next
-            // export starts clean.
-            await _diag.ResetAsync();
-        }
-        catch (Exception ex)
-        {
-            await DisplayAlert("Export failed",
-                $"{ex.Message}\n\nFile on device:\n{_diag.FilePath}", "OK");
         }
     }
 

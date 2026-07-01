@@ -19,12 +19,6 @@
     <ScrollView>
         <VerticalStackLayout Padding="10" Spacing="12">
 
-            <!-- Diagnostics: export the on-device OBD log file via the OS share sheet -->
-            <Button Text="Export OBD logs"
-                    BackgroundColor="#34495E"
-                    TextColor="White"
-                    Clicked="OnExportObdLogsClicked"/>
-
             <!-- ROUTES rendered with BindableLayout instead of CollectionView -->
             <VerticalStackLayout
                 BindableLayout.ItemsSource="{Binding Routes}"
