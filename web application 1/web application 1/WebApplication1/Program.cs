@@ -23,12 +23,6 @@ builder.Services.AddControllersWithViews();
 builder.Services.AddDbContext<WebAppDbContext>(options => options.UseSqlServer(builder.Configuration.GetConnectionString("WebAppDbConnectionString")));
 builder.Services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
 
-//builder.Services.AddDefaultIdentity<AppUser>(options =>
-//{
-//    options.SignIn.RequireConfirmedAccount = false;
-//})
-//.AddRoles<IdentityRole>() // Add role support
-//.AddEntityFrameworkStores<WebAppDbContext>();
 builder.Services.AddIdentity<AppUser, IdentityRole>(options =>
 {
     options.SignIn.RequireConfirmedAccount = false;
@@ -51,7 +45,6 @@ builder.Services.ConfigureApplicationCookie(options =>
 var jwt = builder.Configuration.GetSection("JwtSettings");   // Issuer, Audience, Key
 builder.Services
     .AddAuthentication()      // do NOT set a default scheme – each controller chooses
-                              //.AddCookie(CookieAuthenticationDefaults.AuthenticationScheme)
     .AddJwtBearer(JwtBearerDefaults.AuthenticationScheme, opts =>
     {
         opts.TokenValidationParameters = new TokenValidationParameters
@@ -102,12 +95,10 @@ var app = builder.Build();
 // Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())
 {
-    //app.UseExceptionHandler("/Error");
     // The default HSTS value is 30 days. You may want to change this for production scenarios, see https://aka.ms/aspnetcore-hsts.
     app.UseHsts();
 }
 
-//app.UseHttpsRedirection();
 app.UseStaticFiles();
 
 app.UseRouting();

@@ -40,18 +40,6 @@ public class DriverController : ControllerBase
             EndDate = x.EndDate,
             CarSerialNumber = x.Car.SerialNumber
         }).ToList();
-        //var routes = (await _routeRepository.GetAll())
-        //             .Where(r => r.UserId == userId)
-        //             .Select(r => new {
-        //                 r.Id,
-        //                 r.Name,
-        //                 r.Start,
-        //                 r.End,
-        //                 r.Status,
-        //                 r.StartDate,
-        //                 r.EndDate
-        //             });
-
         return Ok(result);
     }
 

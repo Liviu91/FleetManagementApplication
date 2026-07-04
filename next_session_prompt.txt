@@ -1,0 +1,108 @@
+== FLEET MANAGEMENT APPLICATION — COPILOT SESSION CONTEXT ==
+
+## Project Overview
+
+This is a Romanian fleet management system consisting of four components:
+1. **MAUI Android app** (`MauiApp1/`) — driver-side: connects to ELM327 OBD dongle via Bluetooth, collects GPS via continuous LocationManager, publishes data to RabbitMQ.
+2. **ASP.NET Core Web API + MVC** (`web application 1/`) — admin/driver web dashboard. REST API consumed by MAUI and Worker. EF Core + SQL Server.
+3. **WorkerService** (`WorkerService/`) — consumes RabbitMQ messages, writes CarData and GpsLogEntry to the DB.
+4. **Database** — SQL Server, schema in `Db final.bacpac`.
+
+Active branch: `feature/obd-resilience-and-map-fixes`
+
+---
+
+## Architecture & Key Contracts
+
+- **Timestamps**: ALL timestamps stored as `DateTime.Now` (local wall-clock, device timezone UTC+3). No UTC conversion before storage. `DateTimeKind.Unspecified` comes back from EF — do NOT call `.ToUniversalTime()` or append "Z" before serializing to JSON for display. `AsUtc()` helper exists in HomeController but is used ONLY for internal comparisons (applied to both sides so offset cancels), never for serialization.
+- **GPS**: Continuous `LocationManager` updates in `LocationForegroundService.cs` (Android foreground service). Publishes at 1-second cadence. Fixed previously — maxGap is now 1–3s.
+- **OBD**: ELM327 v1.5 clone at `00:1D:A5:68:98:8C`. Known failure mode: RFCOMM server wedges after session, requires power-cycle to heal. `ObdService.cs` has a `SemaphoreSlim _lifecycleGate` to prevent concurrent connect attempts. All connect attempts are logged to `ObdDiagnostics.cs` (JSONL append-only, reset on each export).
+- **RabbitMQ**: MAUI publishes; WorkerService consumes and writes to DB.
+- **Web admin**: `admin.js` polls `GetActiveVehicles` every second, shows live OBD + GPS per vehicle. Routes table refreshes via `routesRefreshPending` flag (only advances `knownActiveRouteIds` after `loadRoutes()` actually runs).
+
+---
+
+## Recently Fixed Issues (already committed)
+
+All committed to `feature/obd-resilience-and-map-fixes`:
+
+1. **ObdDiagnostics JSONL recorder** — full instrumentation of connect/disconnect/read lifecycle.
+2. **Race condition fix** — `_lifecycleGate` semaphore in ObdService prevents overlapping connect/disconnect.
+3. **Continuous GPS** — replaced one-shot polling with `LocationManager.RequestLocationUpdates`, eliminating 171–219s gaps.
+4. **Fresh log per export** — `ResetAsync()` called after snapshot is taken, not before.
+5. **`_routeOpInProgress` guard** — prevents double-tap start/finish on RoutesPage.
+6. **Actionable wedge error message** — user sees "power-cycle the dongle" instead of a raw exception.
+7. **DateTime.Now everywhere** — all timestamps use local time; fixes displayed times being 3h behind on web.
+8. **Driver.cshtml Razor format fix** — `@r.StartDate.ToString("yyyy-MM-dd HH:mm")` instead of broken format specifier.
+9. **Expanded map view +3h fix** — removed `AsUtc()` wrapping from `timestamp` and `lastUpdate` serialization in HomeController.
+10. **Routes table stale refresh fix** — `routesRefreshPending` flag in admin.js.
+11. **Unit tests updated** — 18/18 pass, `GetActiveVehicles` fixtures use `DateTime.Now`, timestamp test checks no "Z" suffix.
+
+---
+
+## Known Remaining Issues / Next Work Items
+
+### 1. ELM327 RFCOMM Wedge — Hardware Limitation (not fully solved)
+- The dongle's RFCOMM server stops accepting connections after a session ends. Requires physical power-cycle.
+- Symptom in logs: `read ret: -1` or `A Bluetooth Socket failure occurred`, 4 rapid connect attempts all FAILURE.
+- The software side (retry logic, error messaging) is finished. The remaining question is whether we can detect the wedge earlier and surface a cleaner "please power-cycle" notification mid-route without crashing the service loop.
+- OBD diagnostic log file: `ObdDiagnostics.cs` / exported as JSONL from RoutesPage export button.
+
+### 2. Route Quality Validation
+- Routes with 0 OBD rows and near-zero GPS displacement should be flagged in the admin UI (car was stationary, OBD failed, route is useless).
+- Currently there is no such indicator in the web dashboard.
+
+### 3. RabbitMQ Message Loss Under Reconnect
+- Not yet investigated: whether MAUI re-publishes missed messages after a RabbitMQ reconnect, or silently drops them.
+- WorkerService may also need idempotency checks (duplicate CarData rows on re-publish).
+
+### 4. MAUI Publish / Deployment
+- `publish_out.txt` and `publish_out2.txt` in MauiApp1 folder are stale build logs. APK deployment flow not yet automated.
+
+### 5. Web App: No Authentication
+- The admin and driver web pages have no login/auth. This is a known gap, not yet prioritized.
+
+---
+
+## File Map (key files)
+
+| File | Purpose |
+|------|---------|
+| `MauiApp1/.../Services/ObdService.cs` | BLE/RFCOMM OBD, lifecycle gate, diagnostics |
+| `MauiApp1/.../Services/ObdDiagnostics.cs` | JSONL diagnostic recorder |
+| `MauiApp1/.../Pages/RoutesPage.xaml.cs` | Driver UI, route start/finish, export |
+| `MauiApp1/.../Platforms/Android/LocationForegroundService.cs` | Continuous GPS, RabbitMQ publish |
+| `web application 1/.../Controllers/HomeController.cs` | GetActiveVehicles, GetRouteGpsData, AsUtc() |
+| `web application 1/.../Controllers/DriverController.cs` | StartRoute, FinishRoute |
+| `web application 1/.../wwwroot/js/admin.js` | Live polling, routes table, map rendering |
+| `web application 1/.../Views/Home/Driver.cshtml` | Driver route list view |
+| `web application 1/.../DataSeeder.cs` | Seed data for dev |
+| `web application 1/.../WebApplication1.Tests/LiveDataTests.cs` | Unit tests (18/18 pass) |
+| `WorkerService/.../Worker.cs` | RabbitMQ consumer, DB writer |
+
+---
+
+## How to Run
+
+```
+build_and_run.bat   # starts web app + worker (see bat for details)
+```
+
+Tests:
+```
+cd "web application 1/web application 1"
+dotnet test WebApplication1.Tests
+```
+
+---
+
+## OBD Diagnostic Log Format (JSONL)
+
+Each line is a JSON object with fields:
+- `event`: `connect_attempt` | `connect_success` | `connect_failure` | `init_sent` | `read_success` | `read_failure` | `disconnect`
+- `timestamp`: local wall-clock ISO string
+- `adapter`: MAC address
+- `detail`: free-form error text or response snippet
+- `outcome`: `SUCCESS` | `FAILURE` | `PARTIAL`
+
+Exported from the app via the share button on RoutesPage after a trip.

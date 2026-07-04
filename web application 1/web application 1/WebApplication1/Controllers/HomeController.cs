@@ -41,56 +41,6 @@ namespace Project.Controllers
             _userManager = userManager;
         }
 
-        //[Authorize]
-        //public IActionResult Index()
-        //{
-        //    //var data = (await _carDataRepository.GetAll()).ToList();
-        //    //var route = (await _routeRepository.GetAll()).ToList();
-        //    //var users = (await _userRepository.GetAll()).ToList();
-        //    //var cars = (await _carRepository.GetAll()).ToList();
-
-        //    //var entries = new List<DisplayDTO>();
-        //    //foreach(var e in data)
-        //    //{
-        //    //    entries.Add(new DisplayDTO
-        //    //    {
-        //    //        FirstName = users.Single(x => x.Id == route.Single(z => z.Id == e.RouteId).UserId).FirstName,
-        //    //        LastName = users.Single(x => x.Id == route.Single(z => z.Id == e.RouteId).UserId).LastName,
-        //    //        SerialNumber = cars.Single(x => x.Id == route.Single(z => z.Id == e.RouteId).CarId).SerialNumber,
-        //    //        RPM = e.RPM,
-        //    //        EngineCoolantTemperature = e.EngineCoolantTemperature,
-        //    //        Timestamp = e.Timestamp
-        //    //    });
-        //    //}
-
-        //    //var routeDisplay = route.Select(r => new RouteDisplayDTO
-        //    //{
-        //    //    UserFullName = users.FirstOrDefault(u => u.Id == r.UserId) is var user && user != null ? $"{user.FirstName} {user.LastName}" : "Unknown",
-        //    //    CarSerialNumber = cars.FirstOrDefault(c => c.Id == r.CarId)?.SerialNumber ?? "Unknown",
-        //    //    Name = r.Name,
-        //    //    Start = r.Start,
-        //    //    End = r.End,
-        //    //    StartDate = r.StartDate,
-        //    //    EndDate = r.EndDate,
-        //    //    Status = r.Status
-        //    //}).ToList();
-
-        //    //ViewBag.Routes = routeDisplay;
-        //    if (User.Identity.IsAuthenticated)
-        //    {
-        //        if (User.IsInRole("Admin"))
-        //            return RedirectToAction("Admin");
-
-        //        if (User.IsInRole("Driver"))
-        //            return RedirectToAction("Driver");
-        //    }
-        //    return View();
-        //    //return View(entries);
-
-
-        //    // Show welcome or login prompt
-        //}
-
         [Authorize]
         public async Task<IActionResult> Index()
         {
@@ -106,7 +56,6 @@ namespace Project.Controllers
                     return RedirectToAction("Driver");
             }
 
-            //return RedirectToAction("AccessDenied", "Account");
             return View();
         }
 
@@ -267,15 +216,6 @@ namespace Project.Controllers
             await _routeRepository.AddAsync(entry);
             return Ok();
         }
-
-        //[Route("getUsers")]
-        //[HttpGet]
-        //public async Task<ActionResult<IEnumerable<UserDTO>>> GetUsers()
-        //{
-        //    var users = await _userRepository.GetAll();
-        //    var result = users.Select(x => new UserDTO { Id = x.Id, FirstName = x.FirstName, LastName = x.LastName }).ToList();
-        //    return Ok(result);
-        //}
 
         [Route("getUsers")]
         [HttpGet]

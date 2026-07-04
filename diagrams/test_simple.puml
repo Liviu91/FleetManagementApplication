@@ -1,6 +1,0 @@
-@startuml
-title Test Simplu
-
-[Component A] --> [Component B]
-
-@enduml
