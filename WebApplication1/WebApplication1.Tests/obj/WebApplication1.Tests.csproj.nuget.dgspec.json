@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "C:\\Stuff\\sent_from_old_laptop\\duty\\FleetManagementApplication\\WebApplication1\\WebApplication1.Tests\\WebApplication1.Tests.csproj": {}
+    "C:\\Stuff\\sent_from_old_laptop\\duty\\AplicatieMonitorizareParcAuto\\WebApplication1\\WebApplication1.Tests\\WebApplication1.Tests.csproj": {}
   },
   "projects": {
-    "C:\\Stuff\\sent_from_old_laptop\\duty\\FleetManagementApplication\\WebApplication1\\WebApplication1.csproj": {
+    "C:\\Stuff\\sent_from_old_laptop\\duty\\AplicatieMonitorizareParcAuto\\WebApplication1\\WebApplication1.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "C:\\Stuff\\sent_from_old_laptop\\duty\\FleetManagementApplication\\WebApplication1\\WebApplication1.csproj",
+        "projectUniqueName": "C:\\Stuff\\sent_from_old_laptop\\duty\\AplicatieMonitorizareParcAuto\\WebApplication1\\WebApplication1.csproj",
         "projectName": "WebApplication1",
-        "projectPath": "C:\\Stuff\\sent_from_old_laptop\\duty\\FleetManagementApplication\\WebApplication1\\WebApplication1.csproj",
+        "projectPath": "C:\\Stuff\\sent_from_old_laptop\\duty\\AplicatieMonitorizareParcAuto\\WebApplication1\\WebApplication1.csproj",
         "packagesPath": "C:\\Users\\ral3clj\\.nuget\\packages\\",
-        "outputPath": "C:\\Stuff\\sent_from_old_laptop\\duty\\FleetManagementApplication\\WebApplication1\\obj\\",
+        "outputPath": "C:\\Stuff\\sent_from_old_laptop\\duty\\AplicatieMonitorizareParcAuto\\WebApplication1\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
           "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
@@ -117,14 +117,14 @@
         }
       }
     },
-    "C:\\Stuff\\sent_from_old_laptop\\duty\\FleetManagementApplication\\WebApplication1\\WebApplication1.Tests\\WebApplication1.Tests.csproj": {
+    "C:\\Stuff\\sent_from_old_laptop\\duty\\AplicatieMonitorizareParcAuto\\WebApplication1\\WebApplication1.Tests\\WebApplication1.Tests.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "C:\\Stuff\\sent_from_old_laptop\\duty\\FleetManagementApplication\\WebApplication1\\WebApplication1.Tests\\WebApplication1.Tests.csproj",
+        "projectUniqueName": "C:\\Stuff\\sent_from_old_laptop\\duty\\AplicatieMonitorizareParcAuto\\WebApplication1\\WebApplication1.Tests\\WebApplication1.Tests.csproj",
         "projectName": "WebApplication1.Tests",
-        "projectPath": "C:\\Stuff\\sent_from_old_laptop\\duty\\FleetManagementApplication\\WebApplication1\\WebApplication1.Tests\\WebApplication1.Tests.csproj",
+        "projectPath": "C:\\Stuff\\sent_from_old_laptop\\duty\\AplicatieMonitorizareParcAuto\\WebApplication1\\WebApplication1.Tests\\WebApplication1.Tests.csproj",
         "packagesPath": "C:\\Users\\ral3clj\\.nuget\\packages\\",
-        "outputPath": "C:\\Stuff\\sent_from_old_laptop\\duty\\FleetManagementApplication\\WebApplication1\\WebApplication1.Tests\\obj\\",
+        "outputPath": "C:\\Stuff\\sent_from_old_laptop\\duty\\AplicatieMonitorizareParcAuto\\WebApplication1\\WebApplication1.Tests\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
           "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
@@ -146,8 +146,8 @@
           "net9.0": {
             "targetAlias": "net9.0",
             "projectReferences": {
-              "C:\\Stuff\\sent_from_old_laptop\\duty\\FleetManagementApplication\\WebApplication1\\WebApplication1.csproj": {
-                "projectPath": "C:\\Stuff\\sent_from_old_laptop\\duty\\FleetManagementApplication\\WebApplication1\\WebApplication1.csproj"
+              "C:\\Stuff\\sent_from_old_laptop\\duty\\AplicatieMonitorizareParcAuto\\WebApplication1\\WebApplication1.csproj": {
+                "projectPath": "C:\\Stuff\\sent_from_old_laptop\\duty\\AplicatieMonitorizareParcAuto\\WebApplication1\\WebApplication1.csproj"
               }
             }
           }

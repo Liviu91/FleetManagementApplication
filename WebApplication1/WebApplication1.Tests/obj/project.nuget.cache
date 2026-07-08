@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "iyvlkIjMubA=",
+  "dgSpecHash": "eHcF3ETx11k=",
   "success": true,
-  "projectFilePath": "C:\\Stuff\\sent_from_old_laptop\\duty\\FleetManagementApplication\\WebApplication1\\WebApplication1.Tests\\WebApplication1.Tests.csproj",
+  "projectFilePath": "C:\\Stuff\\sent_from_old_laptop\\duty\\AplicatieMonitorizareParcAuto\\WebApplication1\\WebApplication1.Tests\\WebApplication1.Tests.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\ral3clj\\.nuget\\packages\\azure.core\\1.38.0\\azure.core.1.38.0.nupkg.sha512",
     "C:\\Users\\ral3clj\\.nuget\\packages\\azure.identity\\1.11.4\\azure.identity.1.11.4.nupkg.sha512",

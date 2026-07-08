@@ -64,6 +64,8 @@
 			<_OutJunk Include="$(OutputPath)*" Exclude="$(OutputPath)publish\**" />
 		</ItemGroup>
 		<Delete Files="@(_OutJunk)" />
+		<!-- Remove the intermediate unsigned APK produced under obj\ (…\android\bin\<AppId>.apk) -->
+		<Delete Files="$(IntermediateOutputPath)android\bin\$(ApplicationId).apk" />
 		<!-- Inside publish\: delete unsigned APK and build byproducts, keep only -Signed.apk -->
 		<Delete Files="$(PublishDir)$(ApplicationId).apk" />
 		<Delete Files="$(PublishDir)_Microsoft.Android.Resource.Designer.dll" />
