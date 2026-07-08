@@ -13,9 +13,9 @@ REM ============================================================================
 setlocal EnableExtensions
 cd /d "%~dp0"
 
-set "WEB=web application 1\web application 1\WebApplication1\WebApplication1.csproj"
-set "WORKER=WorkerService\WorkerService\WorkerService\WorkerService.csproj"
-set "TESTS=web application 1\web application 1\WebApplication1.Tests\WebApplication1.Tests.csproj"
+set "WEB=WebApplication1\WebApplication1.csproj"
+set "WORKER=WorkerService\WorkerService.csproj"
+set "TESTS=WebApplication1\WebApplication1.Tests\WebApplication1.Tests.csproj"
 
 echo ============================================================
 echo  Fleet Management - build ^& test

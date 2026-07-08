@@ -1,7 +1,0 @@
-<Project>
-  <PropertyGroup>
-    <!-- Enable detailed build logging to file -->
-    <MSBuildLogFile>$(MSBuildProjectDirectory)\build.log</MSBuildLogFile>
-    <MSBuildLogVerbosity>detailed</MSBuildLogVerbosity>
-  </PropertyGroup>
-</Project>
